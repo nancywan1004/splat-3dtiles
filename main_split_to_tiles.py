@@ -90,6 +90,7 @@ def main_split_to_tiles(input_dir: str, output_dir: str,
     # 读取所有 Splat 文件
     splat_files = [f for f in os.listdir(input_dir) if f.endswith('.splat')]  
     file_num = len(splat_files)
+    print(f"Found {file_num} splat files.")
 
     # 初始化进度队列
     manager = Manager()

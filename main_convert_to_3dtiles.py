@@ -13,7 +13,7 @@ from collections import defaultdict
 
 import numpy as np
 from tqdm import tqdm
-from common import get_point_num, getPointSize, read_splat_file
+from common import get_point_num, getPointSize, read_splat_file, read_gaussian_file
 from point import Point, compute_box, merge_box
 from tile import TileId
 from tile_manager import TileManager
@@ -47,8 +47,8 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
         input_sub_dir = os.path.join(input_dir, sub_dir)
 
         # 读取所有 Splat 文件
-        splat_files = [f for f in os.listdir(input_sub_dir) if f.endswith('.splat')]  
-        
+        splat_files = [f for f in os.listdir(input_sub_dir) if f.endswith('.splat')]
+
         for splat_file in splat_files:
             tile_id = TileId.fromString(splat_file)
             tile_node = TileNode(tile_id)
@@ -59,7 +59,7 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
             tile_node.gltf_file = os.path.join(sub_dir, gltf_file)
             tile_node.gltf_file = tile_node.gltf_file.replace("\\", "/")
             tile_node_dict[tile_id] = tile_node
-        
+
     for tile_id, tile_node in tile_node_dict.items():
         parent_tile_id = tile_id.getParent()
         parent_tile_node = tile_node_dict.get(parent_tile_id)
@@ -89,28 +89,28 @@ def generate_tileset_json(root_tile_nodes: List[TileNode], output_dir: str, enu_
     def build_tile_structure(tile_node: TileNode) -> Dict:
 
         bounding_volume = {"box": tile_node.bounds}
-        content = {"uri": tile_node.gltf_file} 
+        content = {"uri": tile_node.gltf_file}
         geometric_error = tile_node.geometric_error
-        
+
         children = [build_tile_structure(child_tile_node)
                     for child_tile_node in tile_node.children] if tile_node.children else []
-        
+
         tile_structure = {
             "boundingVolume": bounding_volume,
             "geometricError": geometric_error,
             "refine": "REPLACE",
             "content": content,
         }
-        
+
         if children:
             tile_structure["children"] = children
 
         return tile_structure
-    
+
     def build_root(root_tile_nodes:List[TileNode], enu_origin: Tuple[float, float], geometric_error: float):
 
         box_list = [tile_node.bounds for tile_node in root_tile_nodes] if root_tile_nodes else []
-        
+
         bounding_volume = {"box": merge_box(box_list)}
 
         # 将经纬度转换成 ECEF 变换矩阵
@@ -118,7 +118,7 @@ def generate_tileset_json(root_tile_nodes: List[TileNode], output_dir: str, enu_
 
         children = [build_tile_structure(tile_node)
                     for tile_node in root_tile_nodes] if root_tile_nodes else []
-        
+
         tile_structure = {
             "boundingVolume": bounding_volume,
             "transform": transform,
@@ -219,7 +219,7 @@ def splat_to_gltf_with_gaussian_extension(points: List[Point], output_path: str)
     # 将二进制数据写入 Buffer
     gltf.buffers[0].uri = "data:application/octet-stream;base64," + base64.b64encode(
         positions_binary + colors_binary + rotations_binary + scales_binary).decode("utf-8")
-    
+
     gltf.save(output_path)
 
 
@@ -227,7 +227,7 @@ def convert_to_gltf(tile_node: TileNode, input_file: str, output_file: str, shar
     """
     将单个高斯溅射的数据文件转换为 glTF 文件，并更新 bounds 信息
     """
-    points = read_splat_file(input_file)
+    points = read_gaussian_file(input_file)  # 支持 .splat 和 .ply 格式
     if(len(points) == 0):
         return
 
@@ -284,7 +284,7 @@ def convert_to_gltf_tiles(tile_node_dict: Dict[TileId, TileNode], input_dir: str
         tile_node_dict[tile_id].bounds = bounds
 
 
-def main_convert_to_3dtiles(input_dir: str, output_dir: str, 
+def main_convert_to_3dtiles(input_dir: str, output_dir: str,
                             enu_origin: Tuple[float, float] = (0.0, 0.0),
                             tile_zoom: int = 20, tile_error: float = 1.0):
     """
@@ -293,11 +293,10 @@ def main_convert_to_3dtiles(input_dir: str, output_dir: str,
     # 确保输出目录存在
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        
+
     root_tile_nodes, tile_node_dict = build_tile_tree(input_dir, tile_error)
 
     convert_to_gltf_tiles(tile_node_dict, input_dir, output_dir)
 
     generate_tileset_json(root_tile_nodes, output_dir, enu_origin)
 
-        

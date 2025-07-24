@@ -12,9 +12,21 @@ splat-3dtiles 是一款将高斯点云转换为 Cesium 3D Tiles 格式的工具�
 
 
 ## 數據要求
-僅支持 .splat 數據文件，僅支持 z 向上，且以 ENU 坐标系存储。
+支持 .splat 和 .ply 數據文件，僅支持 z 向上，且以 ENU 坐标系存储。
 暫不支持平移、旋轉、缩放等操作，如果需要，可以先使用其他工具进行转换。
 可使用 SuperSplat 等工具轉換 https://superspl.at/editor
+
+### 支持的文件格式
+- ✅ `.splat` 文件 (二进制格式)
+- ✅ `.ply` 文件 (3D Gaussian Splatting标准格式)
+- ✅ 混合格式处理 (可同时处理不同格式文件)
+
+### PLY格式支持
+如需使用PLY格式，请先安装依赖：
+```bash
+pip install plyfile
+```
+详细说明请参考 [PLY_SUPPORT.md](PLY_SUPPORT.md)
 
 
 ## 思路說明
@@ -35,8 +47,21 @@ splat-3dtiles 是一款将高斯点云转换为 Cesium 3D Tiles 格式的工具�
 
 ## 使用
 
-```
+### 基本用法
+```bash
+# 处理SPLAT文件
 python main.py --input ./data/NNU_1/splats --output ./data/NNU_1/3dtiles --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
+
+# 处理PLY文件
+python main.py --input ./data/ply_models --output ./data/ply_3dtiles --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
+
+# 处理混合格式文件夹
+python main.py --input ./data/mixed_models --output ./data/mixed_3dtiles --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
+```
+
+### 测试PLY支持
+```bash
+python test_ply_support.py
 ```
 
 ## 參考運行配置
@@ -49,10 +74,10 @@ python main.py --input ./data/NNU_1/splats --output ./data/NNU_1/3dtiles --enu_o
             "console": "integratedTerminal",
             "python": "D:/Python39/python.exe",
             "args": [
-                "--input", "./data/NNU_1/splats", 
+                "--input", "./data/NNU_1/splats",
                 "--output", "./data/NNU_1/3dtiles",
                 "--enu_origin", "118.91083364082562", "32.116922266350315",
-                "--tile_zoom", "20",                
+                "--tile_zoom", "20",
             ],
         }
     ]
@@ -72,4 +97,4 @@ python main.py --input ./data/NNU_1/splats --output ./data/NNU_1/3dtiles --enu_o
     parser.add_argument("--max_scale", type=float, default=10000, help="最大缩放值阈值，大于该阈值的高斯点会被过滤，默认为 10000。")
     parser.add_argument("--flyers_num", type=int, default=25, help="移除飞点的最临近点数，默认为25。")
     parser.add_argument("--flyers_dis", type=float, default=10, help="移除飞点的距离因子，最小移除的越多，默认为10。")
-    
+

@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from tqdm import tqdm
 
-from common import getPointSize, read_splat_file, write_splat_file
+from common import getPointSize, read_gaussian_file, write_gaussian_file
 
 from point import Point
 from tile import TileId
@@ -25,13 +25,24 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
     处理单个父级瓦片的LOD构建
     """
     try:
-        parent_tile_file_path = parent_tile_id.getFilePath(output_dir, ".splat")
+        # 检测输入文件格式
+        file_format = "splat"  # 默认格式
+        for child_tile_id in children_tile_ids:
+            # 检查是否存在PLY格式的文件
+            ply_path = child_tile_id.getFilePath(input_dir, ".ply")
+            if os.path.exists(ply_path):
+                file_format = "ply"
+                break
+
+        ext = ".ply" if file_format == "ply" else ".splat"
+        parent_tile_file_path = parent_tile_id.getFilePath(output_dir, ext)
 
         parent_points = []
         for child_tile_id in children_tile_ids:
-            child_tile_file_path = child_tile_id.getFilePath(input_dir, ".splat")        
-            points = read_splat_file(child_tile_file_path)
-            parent_points.extend(points)
+            child_tile_file_path = child_tile_id.getFilePath(input_dir, ext)
+            if os.path.exists(child_tile_file_path):
+                points = read_gaussian_file(child_tile_file_path)  # 支持 .splat 和 .ply 格式
+                parent_points.extend(points)
 
         lod_points = []
         point_num = len(parent_points)
@@ -64,16 +75,36 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
 
             # 提取聚类中的点
             cluster_points = [parent_points[j] for j in indices]
-            weights = np.array([point.color[3] / 255.0 for point in cluster_points])
 
-            # 计算加权平均位置
-            weighted_positions = np.average([point.position for point in cluster_points], axis=0, weights=weights)
-            # 计算加权平均颜色
-            weighted_color = np.average([point.color for point in cluster_points], axis=0, weights=weights)
-            # 计算加权平均缩放
-            # weighted_scale = np.average([point.scale for point in cluster_points], axis=0, weights=weights)
-            # 计算加权平均旋转
-            weighted_rotation = np.average([point.rotation for point in cluster_points], axis=0, weights=weights)
+            # 计算权重，基于透明度，但确保至少有最小权重
+            raw_weights = np.array([point.color[3] / 255.0 for point in cluster_points])
+
+            # 如果所有权重都为0或接近0，使用均等权重
+            if np.sum(raw_weights) < 1e-6:
+                weights = np.ones(len(cluster_points)) / len(cluster_points)
+            else:
+                # 确保权重至少有一个最小值，避免数值问题
+                weights = np.maximum(raw_weights, 1e-6)
+                weights = weights / np.sum(weights)  # 归一化
+
+            # 验证权重
+            if not np.isfinite(weights).all() or np.sum(weights) < 1e-6:
+                weights = np.ones(len(cluster_points)) / len(cluster_points)
+
+            try:
+                # 计算加权平均位置
+                weighted_positions = np.average([point.position for point in cluster_points], axis=0, weights=weights)
+                # 计算加权平均颜色
+                weighted_color = np.average([point.color for point in cluster_points], axis=0, weights=weights)
+                # 计算加权平均缩放
+                # weighted_scale = np.average([point.scale for point in cluster_points], axis=0, weights=weights)
+                # 计算加权平均旋转
+                weighted_rotation = np.average([point.rotation for point in cluster_points], axis=0, weights=weights)
+            except Exception as e:
+                # 如果加权平均仍然失败，使用简单平均作为备选方案
+                weighted_positions = np.mean([point.position for point in cluster_points], axis=0)
+                weighted_color = np.mean([point.color for point in cluster_points], axis=0)
+                weighted_rotation = np.mean([point.rotation for point in cluster_points], axis=0)
 
             # 计算点的分布范围
             cluster_positions = np.array([point.position for point in cluster_points])
@@ -86,7 +117,7 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
                 p2 = np.array(point.position) + np.array(point.scale)
                 min_pos = np.minimum(min_pos, p1)
                 max_pos = np.maximum(max_pos, p2)
-                
+
             weighted_scale = (max_pos - min_pos) / 2
 
 
@@ -96,10 +127,29 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
             weighted_rotation = np.clip(weighted_rotation, 0, 255)  # 限制范围
             weighted_rotation = np.round(weighted_rotation).astype(int)  # 取整并转换为整数
 
-            lod_points.append(Point(weighted_positions, weighted_color, weighted_scale, weighted_rotation))
+            # 处理球谐系数 - 如果原始点有球谐系数，计算加权平均
+            weighted_sh_coeffs = None
+            if cluster_points and hasattr(cluster_points[0], 'sh_coeffs') and cluster_points[0].sh_coeffs:
+                try:
+                    # 收集所有点的球谐系数
+                    sh_coeffs_list = []
+                    for point in cluster_points:
+                        if hasattr(point, 'sh_coeffs') and point.sh_coeffs:
+                            sh_coeffs_list.append(point.sh_coeffs)
+                        else:
+                            # 如果某个点没有球谐系数，用零填充
+                            sh_coeffs_list.append([0.0] * 48)
 
-        write_splat_file(parent_tile_file_path, lod_points)
-        
+                    if sh_coeffs_list:
+                        # 计算加权平均球谐系数
+                        weighted_sh_coeffs = np.average(sh_coeffs_list, axis=0, weights=weights).tolist()
+                except Exception as e:
+                    weighted_sh_coeffs = None
+
+            lod_points.append(Point(weighted_positions, weighted_color, weighted_scale, weighted_rotation, weighted_sh_coeffs))
+
+        write_gaussian_file(parent_tile_file_path, lod_points)
+
         # 通知主进程任务完成
         progress_queue.put(None)  # 使用 None 作为任务完成的信号
     except Exception as e:
@@ -109,28 +159,28 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
 
 def main_build_lod_tiles(input_dir: str, output_dir: str,
                          enu_origin: Tuple[float, float] = (0.0, 0.0),
-                         tile_zoom: int = 20, tile_resolution: float = 0.1):
+                         tile_zoom: int = 20, tile_resolution: float = 0.05):
     """
     构建LOD瓦片，使用多进程并行处理
     """
 
-    
+
     # 确保输出目录存在
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     distance_threshold = tile_resolution * (2** (20 - tile_zoom))
-    # 读取所有Splat文件
-    splat_files = [f for f in os.listdir(input_dir) if f.endswith('.splat')]
+    # 读取所有高斯文件 (支持 .splat 和 .ply 格式)
+    gaussian_files = [f for f in os.listdir(input_dir) if f.endswith('.splat') or f.endswith('.ply')]
 
     # 从文件中解析出所有的瓦片
-    splat_tiles: List[TileId] = []
-    for splat_file in splat_files:
-        tile_id = TileId.fromString(splat_file)
-        splat_tiles.append(tile_id)
+    gaussian_tiles: List[TileId] = []
+    for gaussian_file in gaussian_files:
+        tile_id = TileId.fromString(gaussian_file)
+        gaussian_tiles.append(tile_id)
 
     parent_tiles = defaultdict(list)
-    for tile_id in splat_tiles:
+    for tile_id in gaussian_tiles:
         parent_tile_id = tile_id.getParent()
         parent_tiles[parent_tile_id].append(tile_id)
 

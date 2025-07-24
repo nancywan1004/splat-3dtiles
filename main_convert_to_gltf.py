@@ -8,7 +8,7 @@ from collections import defaultdict
 
 import numpy as np
 from tqdm import tqdm
-from common import get_point_num, getPointSize, read_splat_file
+from common import get_point_num, getPointSize, read_splat_file, read_gaussian_file
 from point import Point
 from tile import TileId
 from tile_manager import TileManager
@@ -93,22 +93,22 @@ def splat_to_gltf_with_gaussian_extension(points: List[Point], output_path: str)
     # 将二进制数据写入 Buffer
     gltf.buffers[0].uri = "data:application/octet-stream;base64," + base64.b64encode(
         positions_binary + colors_binary + rotations_binary + scales_binary).decode("utf-8")
-    
+
     gltf.save(output_path)
 
 
 # 将单个高斯溅射的数据文件切块
 def convert_to_gltf(input_file: str, output_file: str, progress_queue) -> None:
 
-    points = read_splat_file(input_file)
+    points = read_gaussian_file(input_file)  # 支持 .splat 和 .ply 格式
     splat_to_gltf_with_gaussian_extension(points, output_file)
-    
+
     # 通知主进程任务完成
     progress_queue.put(None)  # 使用 None 作为任务完成的信号
 
 
 # 将高斯溅射的数据切块
-def main_convert_to_gltf(input_dir: str, output_dir: str, 
+def main_convert_to_gltf(input_dir: str, output_dir: str,
                         enu_origin: Tuple[float, float] = (0.0, 0.0),
                         tile_zoom: int = 20):
 
@@ -116,17 +116,17 @@ def main_convert_to_gltf(input_dir: str, output_dir: str,
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-        
+
     input_sub_dirs = [dir for dir in os.listdir(input_dir)]
     for sub_dir in input_sub_dirs:
         input_sub_dir = os.path.join(input_dir, sub_dir)
         output_sub_dir = os.path.join(output_dir, sub_dir)
-        
+
         if not os.path.exists(output_sub_dir):
             os.makedirs(output_sub_dir)
 
         # 读取所有 Splat 文件
-        splat_files = [f for f in os.listdir(input_sub_dir) if f.endswith('.splat')]  
+        splat_files = [f for f in os.listdir(input_sub_dir) if f.endswith('.splat')]
         file_num = len(splat_files)
 
         # 初始化进度队列
@@ -145,7 +145,7 @@ def main_convert_to_gltf(input_dir: str, output_dir: str,
 
                 gltf_file = splat_file.replace('.splat', '.glb')
                 output_file_path = os.path.join(output_sub_dir, gltf_file)
-                
+
 
                 tasks.append(pool.apply_async(convert_to_gltf, (input_file_path, output_file_path, progress_queue)))
 
@@ -156,7 +156,7 @@ def main_convert_to_gltf(input_dir: str, output_dir: str,
 
                 if progress_update is None:
                     completed_tasks += 1  # 任务完成信号
-                    
+
                 pbar.update(1)  # 更新进度条
 
             # 等待所有任务完成

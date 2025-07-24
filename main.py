@@ -1,7 +1,7 @@
 """
 将 3D Gaussian Splatting 点云转换为 Cesium 3D Tiles 格式。
 其中 gltf 文件包含 KHR_gaussian_splatting 扩展。
- 
+
 参考资料
 https://github.com/CesiumGS/glTF/tree/proposal-KHR_gaussian_splatting/extensions/2.0/Khronos/KHR_gaussian_splatting
 
@@ -12,7 +12,7 @@ https://github.com/CesiumGS/glTF/tree/proposal-KHR_gaussian_splatting/extensions
 import argparse
 from multiprocessing import freeze_support
 import os
-from common import getVersion
+from common import getVersion, get_point_num
 
 from main_convert_to_3dtiles import main_convert_to_3dtiles
 from main_convert_to_gltf import main_convert_to_gltf
@@ -21,13 +21,153 @@ from main_clean_tiles import main_clean_tiles
 from main_build_lod_tiles import main_build_lod_tiles
 
 
+def analyze_tile_complexity(split_output_dir):
+    """
+    分析瓦片文件的复杂度，决定是否使用优化版本
+    返回: (should_use_optimized, total_points, total_files, analysis_info)
+    """
+    print("正在分析瓦片文件复杂度...")
+
+    # 查找所有瓦片文件
+    tile_files = []
+    for root, dirs, files in os.walk(split_output_dir):
+        for file in files:
+            if file.endswith('.splat') or file.endswith('.ply'):
+                tile_files.append(os.path.join(root, file))
+
+    if not tile_files:
+        return False, 0, 0, "未找到瓦片文件"
+
+    total_points = 0
+    total_size = 0
+    large_files = 0
+    ply_files = 0
+
+    print(f"找到 {len(tile_files)} 个瓦片文件，正在分析...")
+
+    # 分析前几个文件来估算
+    sample_size = min(10, len(tile_files))
+    sample_points = 0
+    sample_files = 0
+
+    for idx, file_path in enumerate(tile_files[:sample_size]):
+        print(f"  分析样本 {idx + 1}/{sample_size}: {os.path.basename(file_path)}")
+        try:
+            file_size = os.path.getsize(file_path)
+            total_size += file_size
+
+            if file_path.endswith('.ply'):
+                ply_files += 1
+
+            # 获取点数量
+            point_count = get_point_num(file_path)
+            sample_points += point_count
+            sample_files += 1
+
+            print(f"    点数: {point_count:,}, 大小: {file_size / (1024*1024):.1f}MB")
+
+            # 检查是否为大文件
+            if point_count > 100000 or file_size > 50 * 1024 * 1024:  # 10万个点或50MB
+                large_files += 1
+                print(f"    ⚠️  检测到大文件")
+
+        except Exception as e:
+            print(f"    ✗ 分析失败: {e}")
+            continue
+
+    # 估算总点数
+    if sample_files > 0:
+        avg_points_per_file = sample_points / sample_files
+        estimated_total_points = int(avg_points_per_file * len(tile_files))
+    else:
+        estimated_total_points = 0
+
+    # 决策逻辑
+    should_use_optimized = False
+    reasons = []
+
+    # 条件1: 总点数超过阈值
+    if estimated_total_points > 1000000:  # 超过100万个点
+        should_use_optimized = True
+        reasons.append(f"总点数过多 ({estimated_total_points:,})")
+
+    # 条件2: 有大文件
+    if large_files > 0:
+        should_use_optimized = True
+        reasons.append(f"包含 {large_files} 个大文件")
+
+    # 条件3: PLY文件比例高
+    if ply_files > len(tile_files) * 0.5:  # 超过50%是PLY文件
+        should_use_optimized = True
+        reasons.append(f"PLY文件比例高 ({ply_files}/{len(tile_files)})")
+
+    # 条件4: 文件总大小
+    if total_size > 500 * 1024 * 1024:  # 超过500MB
+        should_use_optimized = True
+        reasons.append(f"文件总大小过大 ({total_size / (1024*1024):.1f}MB)")
+
+    analysis_info = {
+        'total_files': len(tile_files),
+        'estimated_points': estimated_total_points,
+        'total_size_mb': total_size / (1024*1024),
+        'large_files': large_files,
+        'ply_files': ply_files,
+        'reasons': reasons
+    }
+
+    return should_use_optimized, estimated_total_points, len(tile_files), analysis_info
+
+
+def run_optimized_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis):
+    """
+    运行优化版本的clean tiles
+    """
+    print("使用优化版本的clean tiles处理...")
+
+    try:
+        # 导入优化版本的函数
+        import subprocess
+        import sys
+
+        # 构建命令
+        cmd = [
+            sys.executable, 'main_clean_tiles_optimized.py',
+            '--input', split_output_dir,
+            '--output', clean_output_dir,
+            '--min_alpha', str(min_alpha),
+            '--max_scale', str(max_scale),
+            '--flyers_num', str(flyers_num),
+            '--flyers_dis', str(flyers_dis)
+        ]
+
+        print(f"执行命令: {' '.join(cmd)}")
+
+        # 运行优化版本
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print("✓ 优化版本clean tiles执行成功")
+            return True
+        else:
+            print(f"✗ 优化版本clean tiles执行失败: {result.stderr}")
+            return False
+
+    except subprocess.CalledProcessError as e:
+        print(f"✗ 优化版本clean tiles执行失败: {e}")
+        print(f"错误输出: {e.stderr}")
+        return False
+    except Exception as e:
+        print(f"✗ 运行优化版本时发生错误: {e}")
+        return False
+
+
 # 主函数
 if __name__ == "__main__":
     freeze_support()
-    
+
     __version__ = getVersion()
     print(f"splat-3dtiles: {__version__}")
-    
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="将 3D Gaussian Splatting 点云转换为 Cesium 3D Tiles 格式")
     parser.add_argument("--input", "-i", required=True, help="输入的高斯点云文件夹.")
@@ -42,16 +182,20 @@ if __name__ == "__main__":
     parser.add_argument("--max_scale", type=float, default=10000, help="最大缩放值阈值，大于该阈值的高斯点会被过滤，默认为 10000。")
     parser.add_argument("--flyers_num", type=int, default=25, help="移除飞点的最临近点数，默认为25。")
     parser.add_argument("--flyers_dis", type=float, default=10, help="移除飞点的距离因子，最小移除的越多，默认为10。")
-    
+
+    # 优化选项
+    parser.add_argument("--force_optimized", action="store_true", help="强制使用优化版本的clean tiles处理。")
+    parser.add_argument("--force_standard", action="store_true", help="强制使用标准版本的clean tiles处理。")
+
     args = parser.parse_args()
 
     input_dir = args.input
     output_dir = args.output
     enu_origin = (args.enu_origin[0], args.enu_origin[1]) if args.enu_origin else (0.0, 0.0)
-    tile_zoom = args.tile_zoom    
+    tile_zoom = args.tile_zoom
     tile_resolution = args.tile_resolution
     tile_error = args.tile_error
-    
+
     min_alpha = args.min_alpha
     max_scale = args.max_scale
     flyers_num = args.flyers_num
@@ -68,7 +212,51 @@ if __name__ == "__main__":
     main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
 
     print(f"----main_clean_tiles start:[{tile_zoom}][{split_output_dir}][{clean_output_dir}]")
-    main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+
+    # 检查用户强制选择
+    if args.force_optimized and args.force_standard:
+        print("⚠️  警告: 不能同时指定 --force_optimized 和 --force_standard，将使用自动检测")
+        force_choice = None
+    elif args.force_optimized:
+        force_choice = "optimized"
+        print("🔧 用户强制选择: 使用优化版本")
+    elif args.force_standard:
+        force_choice = "standard"
+        print("🔧 用户强制选择: 使用标准版本")
+    else:
+        force_choice = None
+
+    # 如果没有强制选择，进行自动分析
+    if force_choice is None:
+        should_use_optimized, estimated_points, total_files, analysis_info = analyze_tile_complexity(split_output_dir)
+
+        print(f"瓦片分析结果:")
+        print(f"  文件数量: {analysis_info['total_files']}")
+        print(f"  估算点数: {analysis_info['estimated_points']:,}")
+        print(f"  文件总大小: {analysis_info['total_size_mb']:.1f}MB")
+        print(f"  大文件数量: {analysis_info['large_files']}")
+        print(f"  PLY文件数量: {analysis_info['ply_files']}")
+
+        if should_use_optimized:
+            print(f"🚀 检测到复杂场景，自动使用优化版本:")
+            for reason in analysis_info['reasons']:
+                print(f"   - {reason}")
+            force_choice = "optimized"
+        else:
+            print("📋 场景复杂度适中，使用标准版本")
+            force_choice = "standard"
+
+    # 执行相应的版本
+    if force_choice == "optimized":
+        print("执行优化版本clean tiles...")
+        success = run_optimized_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+
+        if not success:
+            print("⚠️  优化版本执行失败，回退到标准版本...")
+            main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+    else:
+        print("执行标准版本clean tiles...")
+        main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
 
 
     lod_zoom = tile_zoom - 1
@@ -82,5 +270,4 @@ if __name__ == "__main__":
         lod_input_dir = lod_output_dir
         lod_zoom -= 1
 
-    main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)
-    
+    # main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)

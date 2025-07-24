@@ -19,6 +19,7 @@ from main_convert_to_gltf import main_convert_to_gltf
 from main_split_to_tiles import main_split_to_tiles
 from main_clean_tiles import main_clean_tiles
 from main_build_lod_tiles import main_build_lod_tiles
+from main_build_fine_lod import main_build_fine_lod_tiles
 
 
 def analyze_tile_complexity(split_output_dir):
@@ -176,6 +177,9 @@ if __name__ == "__main__":
     parser.add_argument("--tile_zoom", type=int, default=20, help="分块的等级，默认为 20。")
     parser.add_argument("--tile_resolution", type=float, default=0.1, help="用于生成 Lod 的参数，20级代表的精度，默认为 0.1 米。")
     parser.add_argument("--tile_error", type=float, default=1, help="用于生成 tilejson 的 geometric_error 参数，20级代表的误差，默认为 1 米。")
+    parser.add_argument("--lod_factor", type=float, default=1.3, help="LOD因子，控制聚类激进程度。值越小越精细(1.2-2.0)，默认1.3。")
+    parser.add_argument("--use_fine_lod", action="store_true", help="使用精细LOD算法，适合大规模点云场景。")
+    parser.add_argument("--target_reduction_ratio", type=float, default=0.65, help="精细LOD的目标减少比例(0.5-0.8)，默认0.65。")
 
 
     parser.add_argument("--min_alpha", type=float, default=1.0, help="最小透明度阈值，小于该阈值的高斯点会被过滤，默认为 1.0。")
@@ -195,6 +199,9 @@ if __name__ == "__main__":
     tile_zoom = args.tile_zoom
     tile_resolution = args.tile_resolution
     tile_error = args.tile_error
+    lod_factor = args.lod_factor
+    use_fine_lod = args.use_fine_lod
+    target_reduction_ratio = args.target_reduction_ratio
 
     min_alpha = args.min_alpha
     max_scale = args.max_scale
@@ -264,8 +271,13 @@ if __name__ == "__main__":
     while lod_zoom > tile_zoom - 6:
         lod_output_dir = os.path.join(build_output_dir, f"{lod_zoom}")
 
-        print(f"----main_build_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}]")
-        main_build_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom, tile_resolution)
+        if use_fine_lod:
+            print(f"----main_build_fine_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}]")
+            main_build_fine_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom,
+                                    tile_resolution, target_reduction_ratio)
+        else:
+            print(f"----main_build_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}]")
+            main_build_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom, tile_resolution, lod_factor)
 
         lod_input_dir = lod_output_dir
         lod_zoom -= 1

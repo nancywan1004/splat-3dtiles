@@ -159,9 +159,14 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
 
 def main_build_lod_tiles(input_dir: str, output_dir: str,
                          enu_origin: Tuple[float, float] = (0.0, 0.0),
-                         tile_zoom: int = 20, tile_resolution: float = 0.05):
+                         tile_zoom: int = 20, tile_resolution: float = 0.05,
+                         lod_factor: float = 1.5):
     """
     构建LOD瓦片，使用多进程并行处理
+
+    Args:
+        lod_factor: LOD因子，控制聚类的激进程度。值越小越精细，默认1.5
+                   建议范围：1.2-2.0，1.2最精细，2.0最激进
     """
 
 
@@ -169,9 +174,26 @@ def main_build_lod_tiles(input_dir: str, output_dir: str,
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    distance_threshold = tile_resolution * (2** (20 - tile_zoom))
-    # 读取所有高斯文件 (支持 .splat 和 .ply 格式)
+    # 使用更精细的距离阈值计算
+    # 原公式：distance_threshold = tile_resolution * (2** (20 - tile_zoom))
+    # 新公式：使用更小的增长因子，保留更多细节
+    level_diff = 20 - tile_zoom
+    if level_diff == 0:
+        distance_threshold = tile_resolution
+    else:
+        # 使用可调节的LOD因子，而不是固定的2倍增长
+        distance_threshold = tile_resolution * (lod_factor ** level_diff)
+
+    # 自适应调整：对于高密度场景，使用更小的阈值
     gaussian_files = [f for f in os.listdir(input_dir) if f.endswith('.splat') or f.endswith('.ply')]
+    if len(gaussian_files) > 1000:  # 高密度场景
+        distance_threshold *= 0.7  # 减小30%，保留更多细节
+        print(f"检测到高密度场景({len(gaussian_files)}个文件)，调整距离阈值")
+    elif len(gaussian_files) > 500:  # 中等密度场景
+        distance_threshold *= 0.85  # 减小15%
+        print(f"检测到中等密度场景({len(gaussian_files)}个文件)，轻微调整距离阈值")
+
+    print(f"LOD级别 {tile_zoom}: 距离阈值 = {distance_threshold:.4f}米 (LOD因子: {lod_factor}, 文件数: {len(gaussian_files)})")
 
     # 从文件中解析出所有的瓦片
     gaussian_tiles: List[TileId] = []

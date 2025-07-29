@@ -107,13 +107,17 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
     elif estimated_clusters < target_point_num * 0.7:
         adaptive_threshold *= 0.8
     
-    point_update = 0
+    last_progress_update = 0
     for i in range(len(points)):
-        # 每隔1000个点通知主进程一次
+        # 每隔1000个点或处理完成时通知主进程
         if i % point_num_per_update == 0 or i == len(points) - 1:
-            progress_update = (i - point_update) / len(points)
-            progress_queue.put(progress_update)
-            point_update = i
+            # 计算当前进度百分比
+            current_progress = i / len(points)
+            # 发送增量进度更新
+            progress_increment = current_progress - last_progress_update
+            if progress_increment > 0:
+                progress_queue.put(progress_increment)
+                last_progress_update = current_progress
 
         if visited[i]:
             continue
@@ -130,10 +134,17 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
         # 计算加权平均点
         merged_point = compute_weighted_average_point(cluster_points)
         lod_points.append(merged_point)
-        
+
         # 如果已经达到目标点数，停止聚类
         if len(lod_points) >= target_point_num:
+            # 确保发送最终的进度更新
+            if last_progress_update < 1.0:
+                progress_queue.put(1.0 - last_progress_update)
             break
+
+    # 确保循环结束时发送完整的进度更新
+    if last_progress_update < 1.0:
+        progress_queue.put(1.0 - last_progress_update)
     
     # 如果点数仍然太多，进行二次采样
     if len(lod_points) > target_point_num:
@@ -263,38 +274,50 @@ def main_build_fine_lod_tiles(input_dir: str, output_dir: str,
     manager = Manager()
     progress_queue = manager.Queue()
 
-    # 初始化进度条
+    # 初始化进度条 - 使用浮点数以支持增量更新
     total_tasks = len(parent_tiles)
-    pbar = tqdm(total=total_tasks, desc="Building fine LOD", position=0)
+    pbar = tqdm(total=float(total_tasks), desc="Building fine LOD", position=0)
     pbar.mininterval = 0.01
 
     # 使用多进程并行处理每个父级瓦片
     with Pool(processes=cpu_count()) as pool:
         tasks = []
         for parent_tile_id, children_tile_ids in parent_tiles.items():
-            tasks.append(pool.apply_async(build_fine_lod_tiles_for_parent, 
-                                        (parent_tile_id, children_tile_ids, input_dir, output_dir, 
+            tasks.append(pool.apply_async(build_fine_lod_tiles_for_parent,
+                                        (parent_tile_id, children_tile_ids, input_dir, output_dir,
                                          distance_threshold, target_reduction_ratio, progress_queue)))
 
         # 等待所有任务完成
         completed_tasks = 0
         total_output_points = 0
+        task_results = {}  # 存储任务结果
+
         while completed_tasks < total_tasks:
             progress_update = progress_queue.get()
 
             if progress_update is None:
                 completed_tasks += 1
+                # 每完成一个任务，进度条增加1
+                pbar.update(1.0)
             else:
-                pbar.update(progress_update)
+                # 处理子任务内部的进度更新（如果需要的话）
+                # 这里暂时不处理，因为我们主要关注任务完成度
+                pass
 
-        # 等待所有任务完成并收集结果
-        for task in tasks:
-            result = task.get()
-            if isinstance(result, int):
-                total_output_points += result
+        # 收集所有任务的结果
+        for i, task in enumerate(tasks):
+            try:
+                result = task.get(timeout=1)  # 设置超时避免死锁
+                if isinstance(result, int):
+                    total_output_points += result
+                task_results[i] = result
+            except Exception as e:
+                print(f"任务 {i} 执行出错: {e}")
+                task_results[i] = 0
 
     pbar.close()
     print(f"精细LOD构建完成，输出点数: {total_output_points:,}")
+    print(f"成功处理 {len([r for r in task_results.values() if r > 0])} / {total_tasks} 个瓦片")
 
 if __name__ == "__main__":
     # 示例用法

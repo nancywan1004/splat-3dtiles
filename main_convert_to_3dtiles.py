@@ -42,12 +42,24 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
     # 正确初始化 defaultdict
     tile_node_dict: Dict[TileId, TileNode] = defaultdict(TileNode)
 
-    input_sub_dirs = [dir for dir in os.listdir(input_dir)]
+    if not os.path.exists(input_dir):
+        print(f"错误: 输入目录不存在: {input_dir}")
+        return [], {}
+
+    input_sub_dirs = [dir for dir in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, dir))]
+    print(f"找到 {len(input_sub_dirs)} 个子目录: {input_sub_dirs}")
+
     for sub_dir in input_sub_dirs:
         input_sub_dir = os.path.join(input_dir, sub_dir)
 
-        # 读取所有 Splat 文件
-        splat_files = [f for f in os.listdir(input_sub_dir) if f.endswith('.splat')]
+        if not os.path.exists(input_sub_dir):
+            print(f"警告: 子目录不存在: {input_sub_dir}")
+            continue
+
+        # 读取所有 Splat 和 PLY 文件
+        all_files = os.listdir(input_sub_dir)
+        splat_files = [f for f in all_files if f.endswith('.splat') or f.endswith('.ply')]
+        print(f"在目录 {sub_dir} 中找到 {len(splat_files)} 个瓦片文件")
 
         for splat_file in splat_files:
             tile_id = TileId.fromString(splat_file)
@@ -55,7 +67,16 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
             tile_node.geometric_error = tile_error * (2** (20 - tile_id.z))
             tile_node.splat_file = os.path.join(sub_dir, splat_file)
             tile_node.splat_file = tile_node.splat_file.replace("\\", "/")
-            gltf_file = splat_file.replace('.splat', '.glb')
+
+            # 处理不同的文件扩展名
+            if splat_file.endswith('.splat'):
+                gltf_file = splat_file.replace('.splat', '.glb')
+            elif splat_file.endswith('.ply'):
+                gltf_file = splat_file.replace('.ply', '.glb')
+            else:
+                # 默认处理
+                gltf_file = os.path.splitext(splat_file)[0] + '.glb'
+
             tile_node.gltf_file = os.path.join(sub_dir, gltf_file)
             tile_node.gltf_file = tile_node.gltf_file.replace("\\", "/")
             tile_node_dict[tile_id] = tile_node
@@ -71,6 +92,12 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
     for tile_id, tile_node in tile_node_dict.items():
         if tile_node.parent is None:
             root_tile_nodes.append(tile_node)
+
+    print(f"构建瓦片树完成: 总共 {len(tile_node_dict)} 个瓦片节点, {len(root_tile_nodes)} 个根节点")
+
+    if len(tile_node_dict) == 0:
+        print("警告: 没有找到任何有效的瓦片文件！")
+        print("请检查输入目录结构和文件格式(.splat 或 .ply)")
 
     return root_tile_nodes, tile_node_dict
 
@@ -88,7 +115,14 @@ class NumpyEncoder(json.JSONEncoder):
 def generate_tileset_json(root_tile_nodes: List[TileNode], output_dir: str, enu_origin: Tuple[float, float]):
     def build_tile_structure(tile_node: TileNode) -> Dict:
 
-        bounding_volume = {"box": tile_node.bounds}
+        # 检查bounds是否有效
+        if tile_node.bounds:
+            bounding_volume = {"box": tile_node.bounds}
+        else:
+            # 使用默认边界框
+            default_box = [0.0, 0.0, 0.0, 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
+            bounding_volume = {"box": default_box}
+
         content = {"uri": tile_node.gltf_file}
         geometric_error = tile_node.geometric_error
 
@@ -109,9 +143,17 @@ def generate_tileset_json(root_tile_nodes: List[TileNode], output_dir: str, enu_
 
     def build_root(root_tile_nodes:List[TileNode], enu_origin: Tuple[float, float], geometric_error: float):
 
-        box_list = [tile_node.bounds for tile_node in root_tile_nodes] if root_tile_nodes else []
+        # 只收集有效的边界框（非空的bounds）
+        box_list = [tile_node.bounds for tile_node in root_tile_nodes
+                   if root_tile_nodes and tile_node.bounds]
 
-        bounding_volume = {"box": merge_box(box_list)}
+        if box_list:
+            bounding_volume = {"box": merge_box(box_list)}
+        else:
+            # 如果没有有效的边界框，使用默认的边界框
+            default_box = [0.0, 0.0, 0.0, 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
+            bounding_volume = {"box": default_box}
+            print("警告: 没有有效的边界框，使用默认边界框")
 
         # 将经纬度转换成 ECEF 变换矩阵
         transform = geodetic_to_ecef_transformation(enu_origin[0], enu_origin[1])
@@ -130,7 +172,14 @@ def generate_tileset_json(root_tile_nodes: List[TileNode], output_dir: str, enu_
         return tile_structure
 
     geometric_error_list = [tile_node.geometric_error for tile_node in root_tile_nodes] if root_tile_nodes else []
-    geometric_error = np.max(geometric_error_list)
+
+    # 处理空列表的情况，使用默认的geometric_error值
+    if geometric_error_list:
+        geometric_error = np.max(geometric_error_list)
+    else:
+        # 如果没有瓦片节点，使用默认值
+        geometric_error = 100.0  # 默认几何误差
+        print("警告: 没有找到有效的瓦片节点，使用默认几何误差值: 100.0")
 
     tileset = {
         "asset": {"version": "1.1", "gltfUpAxis": "Z"},

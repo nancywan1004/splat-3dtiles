@@ -191,6 +191,10 @@ if __name__ == "__main__":
     parser.add_argument("--force_optimized", action="store_true", help="强制使用优化版本的clean tiles处理。")
     parser.add_argument("--force_standard", action="store_true", help="强制使用标准版本的clean tiles处理。")
 
+    # 跳过步骤选项
+    parser.add_argument("--skip_split", action="store_true", help="跳过split步骤，直接从输入目录的瓦片文件开始构建LOD。")
+    parser.add_argument("--skip_clean", action="store_true", help="跳过clean步骤，直接从输入目录开始构建LOD。")
+
     args = parser.parse_args()
 
     input_dir = args.input
@@ -215,55 +219,87 @@ if __name__ == "__main__":
 
     clean_output_dir = os.path.join(build_output_dir, f"{tile_zoom}")
 
-    print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
-    main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
+    # 检查是否跳过split步骤
+    if args.skip_split:
+        print(f"🚀 跳过split步骤，检查split输出目录...")
 
-    print(f"----main_clean_tiles start:[{tile_zoom}][{split_output_dir}][{clean_output_dir}]")
+        # 检查split输出目录是否存在且包含瓦片文件
+        if os.path.exists(split_output_dir):
+            tile_files = []
+            for root, dirs, files in os.walk(split_output_dir):
+                for file in files:
+                    if file.endswith('.ply') or file.endswith('.splat'):
+                        tile_files.append(os.path.join(root, file))
 
-    # 检查用户强制选择
-    if args.force_optimized and args.force_standard:
-        print("⚠️  警告: 不能同时指定 --force_optimized 和 --force_standard，将使用自动检测")
-        force_choice = None
-    elif args.force_optimized:
-        force_choice = "optimized"
-        print("🔧 用户强制选择: 使用优化版本")
-    elif args.force_standard:
-        force_choice = "standard"
-        print("🔧 用户强制选择: 使用标准版本")
-    else:
-        force_choice = None
-
-    # 如果没有强制选择，进行自动分析
-    if force_choice is None:
-        should_use_optimized, estimated_points, total_files, analysis_info = analyze_tile_complexity(split_output_dir)
-
-        print(f"瓦片分析结果:")
-        print(f"  文件数量: {analysis_info['total_files']}")
-        print(f"  估算点数: {analysis_info['estimated_points']:,}")
-        print(f"  文件总大小: {analysis_info['total_size_mb']:.1f}MB")
-        print(f"  大文件数量: {analysis_info['large_files']}")
-        print(f"  PLY文件数量: {analysis_info['ply_files']}")
-
-        if should_use_optimized:
-            print(f"🚀 检测到复杂场景，自动使用优化版本:")
-            for reason in analysis_info['reasons']:
-                print(f"   - {reason}")
-            force_choice = "optimized"
+            if tile_files:
+                print(f"📁 在split目录中找到 {len(tile_files)} 个瓦片文件，直接使用")
+            else:
+                print(f"⚠️  split目录存在但为空，需要执行split操作")
+                print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
+                main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
         else:
-            print("📋 场景复杂度适中，使用标准版本")
-            force_choice = "standard"
-
-    # 执行相应的版本
-    if force_choice == "optimized":
-        print("执行优化版本clean tiles...")
-        success = run_optimized_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
-
-        if not success:
-            print("⚠️  优化版本执行失败，回退到标准版本...")
-            main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+            print(f"⚠️  split目录不存在，需要执行split操作")
+            print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
+            main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
     else:
-        print("执行标准版本clean tiles...")
-        main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+        print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
+        main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
+
+    # 检查是否跳过clean步骤
+    if args.skip_clean:
+        print(f"🚀 跳过clean步骤，直接使用split输出目录")
+        clean_output_dir = split_output_dir
+        need_clean = False
+    else:
+        print(f"----main_clean_tiles start:[{tile_zoom}][{split_output_dir}][{clean_output_dir}]")
+        need_clean = True
+
+    # 如果需要执行clean操作
+    if need_clean:
+        # 检查用户强制选择
+        if args.force_optimized and args.force_standard:
+            print("⚠️  警告: 不能同时指定 --force_optimized 和 --force_standard，将使用自动检测")
+            force_choice = None
+        elif args.force_optimized:
+            force_choice = "optimized"
+            print("🔧 用户强制选择: 使用优化版本")
+        elif args.force_standard:
+            force_choice = "standard"
+            print("🔧 用户强制选择: 使用标准版本")
+        else:
+            force_choice = None
+
+        # 如果没有强制选择，进行自动分析
+        if force_choice is None:
+            should_use_optimized, estimated_points, total_files, analysis_info = analyze_tile_complexity(split_output_dir)
+
+            print(f"瓦片分析结果:")
+            print(f"  文件数量: {analysis_info['total_files']}")
+            print(f"  估算点数: {analysis_info['estimated_points']:,}")
+            print(f"  文件总大小: {analysis_info['total_size_mb']:.1f}MB")
+            print(f"  大文件数量: {analysis_info['large_files']}")
+            print(f"  PLY文件数量: {analysis_info['ply_files']}")
+
+            if should_use_optimized:
+                print(f"🚀 检测到复杂场景，自动使用优化版本:")
+                for reason in analysis_info['reasons']:
+                    print(f"   - {reason}")
+                force_choice = "optimized"
+            else:
+                print("📋 场景复杂度适中，使用标准版本")
+                force_choice = "standard"
+
+        # 执行相应的版本
+        if force_choice == "optimized":
+            print("执行优化版本clean tiles...")
+            success = run_optimized_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+
+            if not success:
+                print("⚠️  优化版本执行失败，回退到标准版本...")
+                main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
+        else:
+            print("执行标准版本clean tiles...")
+            main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
 
 
     lod_zoom = tile_zoom - 1
@@ -282,4 +318,4 @@ if __name__ == "__main__":
         lod_input_dir = lod_output_dir
         lod_zoom -= 1
 
-    # main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)
+    main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)

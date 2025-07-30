@@ -78,6 +78,9 @@ def build_fine_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: L
 
     except Exception as e:
         print(f"处理瓦片 {parent_tile_id} 时出错: {e}")
+        import traceback
+        print("完整错误堆栈:")
+        traceback.print_exc()
         progress_queue.put(None)
         return 0
 

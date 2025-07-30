@@ -120,24 +120,49 @@ def read_ply_file(file_path: str) -> List[Point]:
         opacity_raw = float(vertex['opacity'][i])
         opacity = 1.0 / (1.0 + np.exp(-opacity_raw))  # sigmoid
 
-        # 读取完整的球谐系数
+        # 读取球谐系数 - 动态适配不同阶数
         sh_coeffs = []
 
-        # DC分量 (0阶球谐系数)
-        dc_0 = float(vertex['f_dc_0'][i])
-        dc_1 = float(vertex['f_dc_1'][i])
-        dc_2 = float(vertex['f_dc_2'][i])
-        sh_coeffs.extend([dc_0, dc_1, dc_2])
+        # DC分量 (0阶球谐系数) - 必须存在
+        try:
+            dc_0 = float(vertex['f_dc_0'][i])
+            dc_1 = float(vertex['f_dc_1'][i])
+            dc_2 = float(vertex['f_dc_2'][i])
+            sh_coeffs.extend([dc_0, dc_1, dc_2])
+        except (ValueError, KeyError) as e:
+            # 如果连DC分量都没有，使用默认值
+            print(f"警告: 无法读取DC分量，使用默认值: {e}")
+            sh_coeffs.extend([0.0, 0.0, 0.0])
 
-        # 高阶球谐系数 (1-3阶)
-        for j in range(45):  # f_rest_0 到 f_rest_44
-            rest_name = f'f_rest_{j}'
+        # 动态检测并读取高阶球谐系数
+        # 首先检查文件中实际存在哪些f_rest字段
+        available_rest_fields = []
+
+        # 从PLY元素的properties中获取字段名
+        field_names = [prop.name for prop in vertex.properties]
+
+        for field_name in field_names:
+            if field_name.startswith('f_rest_'):
+                try:
+                    rest_index = int(field_name.split('_')[2])
+                    available_rest_fields.append(rest_index)
+                except (ValueError, IndexError):
+                    continue
+
+        # 按索引排序
+        available_rest_fields.sort()
+
+        # 读取存在的高阶球谐系数
+        for rest_index in available_rest_fields:
+            rest_name = f'f_rest_{rest_index}'
             try:
-                # 尝试读取高阶球谐系数
                 sh_coeffs.append(float(vertex[rest_name][i]))
             except (ValueError, KeyError):
-                # 如果文件中没有高阶系数，用0填充
                 sh_coeffs.append(0.0)
+
+        # 如果需要，填充到标准的48个系数（3个DC + 45个高阶）
+        while len(sh_coeffs) < 48:
+            sh_coeffs.append(0.0)
 
         # 将DC分量转换为RGB颜色 (用于向后兼容)
         SH_C0 = 0.28209479177387814  # sqrt(1/(4*pi))
@@ -199,8 +224,18 @@ def write_ply_file(file_path: str, points: List[Point]):
     except ImportError:
         raise ImportError("需要安装 plyfile 库来支持PLY格式: pip install plyfile")
 
+    # 检测需要的球谐系数阶数
+    max_sh_coeffs = 3  # 至少需要DC分量
+    if points:
+        for point in points:
+            if hasattr(point, 'sh_coeffs') and point.sh_coeffs:
+                max_sh_coeffs = max(max_sh_coeffs, len(point.sh_coeffs))
+
+    # 计算需要的f_rest字段数量
+    rest_fields_count = max(0, max_sh_coeffs - 3)
+
     if not points:
-        # 创建空的PLY文件，包含完整的球谐系数结构
+        # 创建空的PLY文件，使用动态的球谐系数结构
         dtype_list = [
             ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('scale_0', 'f4'), ('scale_1', 'f4'), ('scale_2', 'f4'),
@@ -208,8 +243,8 @@ def write_ply_file(file_path: str, points: List[Point]):
             ('opacity', 'f4'),
             ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4')
         ]
-        # 添加高阶球谐系数
-        for j in range(45):
+        # 只添加需要的高阶球谐系数字段
+        for j in range(rest_fields_count):
             dtype_list.append((f'f_rest_{j}', 'f4'))
 
         vertex = np.array([], dtype=dtype_list)
@@ -249,19 +284,20 @@ def write_ply_file(file_path: str, points: List[Point]):
             # 处理球谐系数
             if hasattr(point, 'sh_coeffs') and len(point.sh_coeffs) >= 3:
                 # 使用保存的球谐系数
-                sh_coeffs = point.sh_coeffs
-                # 确保有48个系数
-                while len(sh_coeffs) < 48:
-                    sh_coeffs.append(0.0)
+                sh_coeffs = point.sh_coeffs[:]  # 复制一份
                 f_dc_0, f_dc_1, f_dc_2 = sh_coeffs[0], sh_coeffs[1], sh_coeffs[2]
-                f_rest = sh_coeffs[3:48]  # 45个高阶系数
+                # 获取高阶系数，只取需要的数量
+                f_rest = sh_coeffs[3:3+rest_fields_count] if len(sh_coeffs) > 3 else []
+                # 如果高阶系数不够，用0填充
+                while len(f_rest) < rest_fields_count:
+                    f_rest.append(0.0)
             else:
                 # 从RGB颜色转换为球谐系数DC分量
                 SH_C0 = 0.28209479177387814  # sqrt(1/(4*pi))
                 f_dc_0 = (point.color[0] / 255.0 - 0.5) / SH_C0
                 f_dc_1 = (point.color[1] / 255.0 - 0.5) / SH_C0
                 f_dc_2 = (point.color[2] / 255.0 - 0.5) / SH_C0
-                f_rest = [0.0] * 45  # 高阶系数设为0
+                f_rest = [0.0] * rest_fields_count  # 高阶系数设为0
 
             # 构建完整的顶点数据
             vertex_tuple = (
@@ -271,12 +307,12 @@ def write_ply_file(file_path: str, points: List[Point]):
                 opacity,
                 f_dc_0, f_dc_1, f_dc_2
             )
-            # 添加高阶球谐系数
+            # 添加需要的高阶球谐系数
             vertex_tuple += tuple(f_rest)
 
             vertex_data.append(vertex_tuple)
 
-        # 创建完整的数据类型定义，包含球谐系数
+        # 创建动态的数据类型定义，根据实际需要的球谐系数字段
         dtype_list = [
             ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('scale_0', 'f4'), ('scale_1', 'f4'), ('scale_2', 'f4'),
@@ -284,8 +320,8 @@ def write_ply_file(file_path: str, points: List[Point]):
             ('opacity', 'f4'),
             ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4')
         ]
-        # 添加高阶球谐系数
-        for j in range(45):
+        # 只添加需要的高阶球谐系数字段
+        for j in range(rest_fields_count):
             dtype_list.append((f'f_rest_{j}', 'f4'))
 
         # 创建结构化数组

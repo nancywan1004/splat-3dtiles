@@ -48,9 +48,20 @@ def merge_box(box_list: List[List[float]]) -> List[float]:
     if not box_list:
         raise ValueError("box_list 不能为空")
 
+    # 过滤掉空的或无效的边界框
+    valid_boxes = [box for box in box_list if box and len(box) >= 12]
+
+    if not valid_boxes:
+        # 如果没有有效的边界框，返回默认边界框
+        return [0.0, 0.0, 0.0, 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
+
     # 提取所有边界框的中心点和半尺寸
-    centers = np.array([box[:3] for box in box_list])
-    half_sizes = np.array([box[3::4] for box in box_list])
+    centers = np.array([box[:3] for box in valid_boxes])
+    half_sizes = np.array([box[3::4] for box in valid_boxes])
+
+    # 检查数组是否为空
+    if centers.size == 0 or half_sizes.size == 0:
+        return [0.0, 0.0, 0.0, 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
 
     # 计算所有边界框的最小和最大坐标
     min_coords = np.min(centers - half_sizes, axis=0)

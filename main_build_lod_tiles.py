@@ -41,127 +41,190 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
         for child_tile_id in children_tile_ids:
             child_tile_file_path = child_tile_id.getFilePath(input_dir, ext)
             if os.path.exists(child_tile_file_path):
-                points = read_gaussian_file(child_tile_file_path)  # 支持 .splat 和 .ply 格式
-                parent_points.extend(points)
+                try:
+                    points = read_gaussian_file(child_tile_file_path)  # 支持 .splat 和 .ply 格式
+                    if points:
+                        parent_points.extend(points)
+                        print(f"成功读取 {len(points)} 个点从 {os.path.basename(child_tile_file_path)}")
+                    else:
+                        print(f"警告: 文件 {os.path.basename(child_tile_file_path)} 为空")
+                except Exception as e:
+                    print(f"读取文件 {child_tile_file_path} 时出错: {e}")
+                    continue
 
         lod_points = []
         point_num = len(parent_points)
+        print(f"瓦片 {parent_tile_id}: 开始处理 {point_num:,} 个点，距离阈值: {distance_threshold:.4f}")
+
         if point_num == 0:
+            print(f"瓦片 {parent_tile_id}: 没有点数据，跳过")
             return lod_points
 
-        # 提取所有点的位置
-        positions = np.array([point.position for point in parent_points])
+        # 检查点数据的有效性
+        try:
+            # 提取所有点的位置
+            positions = np.array([point.position for point in parent_points])
 
-        # 构建 KDTree
-        kdtree = KDTree(positions)
-        visited = np.zeros(point_num, dtype=bool)
+            # 检查位置数据是否有效
+            if not np.isfinite(positions).all():
+                print(f"瓦片 {parent_tile_id}: 发现无效的位置数据，尝试清理...")
+                # 过滤掉无效的点
+                valid_indices = np.isfinite(positions).all(axis=1)
+                valid_points = [parent_points[i] for i in range(len(parent_points)) if valid_indices[i]]
+                if len(valid_points) == 0:
+                    print(f"瓦片 {parent_tile_id}: 所有点都无效，跳过")
+                    return lod_points
+                parent_points = valid_points
+                positions = np.array([point.position for point in parent_points])
+                point_num = len(parent_points)
+                print(f"瓦片 {parent_tile_id}: 清理后剩余 {point_num:,} 个有效点")
+
+            # 构建 KDTree
+            print(f"瓦片 {parent_tile_id}: 构建KDTree...")
+            kdtree = KDTree(positions)
+            visited = np.zeros(point_num, dtype=bool)
+            print(f"瓦片 {parent_tile_id}: KDTree构建完成")
+
+        except Exception as e:
+            print(f"瓦片 {parent_tile_id}: 构建KDTree时出错: {e}")
+            raise
 
         last_progress_update = 0
-        for i in range(point_num):
-            # 每隔1000个点或处理完成时通知主进程
-            if i % point_num_per_update == 0 or i == point_num - 1:
-                # 计算当前进度百分比
-                current_progress = i / point_num
-                # 发送增量进度更新
-                progress_increment = current_progress - last_progress_update
-                if progress_increment > 0:
-                    progress_queue.put(progress_increment)
-                    last_progress_update = current_progress
+        cluster_count = 0
 
-            if visited[i]:
-                continue
+        try:
+            for i in range(point_num):
+                # 每隔1000个点或处理完成时通知主进程
+                if i % point_num_per_update == 0 or i == point_num - 1:
+                    # 计算当前进度百分比
+                    current_progress = i / point_num
+                    # 发送增量进度更新
+                    progress_increment = current_progress - last_progress_update
+                    if progress_increment > 0:
+                        progress_queue.put(progress_increment)
+                        last_progress_update = current_progress
 
-            # 查询当前点的邻域
-            indices = kdtree.query_ball_point(positions[i], distance_threshold)
+                if visited[i]:
+                    continue
 
-            # 标记这些点为已访问
-            visited[indices] = True
-
-            # 提取聚类中的点
-            cluster_points = [parent_points[j] for j in indices]
-
-            # 计算权重，基于透明度，但确保至少有最小权重
-            raw_weights = np.array([point.color[3] / 255.0 for point in cluster_points])
-
-            # 如果所有权重都为0或接近0，使用均等权重
-            if np.sum(raw_weights) < 1e-6:
-                weights = np.ones(len(cluster_points)) / len(cluster_points)
-            else:
-                # 确保权重至少有一个最小值，避免数值问题
-                weights = np.maximum(raw_weights, 1e-6)
-                weights = weights / np.sum(weights)  # 归一化
-
-            # 验证权重
-            if not np.isfinite(weights).all() or np.sum(weights) < 1e-6:
-                weights = np.ones(len(cluster_points)) / len(cluster_points)
-
-            try:
-                # 计算加权平均位置
-                weighted_positions = np.average([point.position for point in cluster_points], axis=0, weights=weights)
-                # 计算加权平均颜色
-                weighted_color = np.average([point.color for point in cluster_points], axis=0, weights=weights)
-                # 计算加权平均缩放
-                # weighted_scale = np.average([point.scale for point in cluster_points], axis=0, weights=weights)
-                # 计算加权平均旋转
-                weighted_rotation = np.average([point.rotation for point in cluster_points], axis=0, weights=weights)
-            except Exception as e:
-                # 如果加权平均仍然失败，使用简单平均作为备选方案
-                weighted_positions = np.mean([point.position for point in cluster_points], axis=0)
-                weighted_color = np.mean([point.color for point in cluster_points], axis=0)
-                weighted_rotation = np.mean([point.rotation for point in cluster_points], axis=0)
-
-            # 计算点的分布范围
-            cluster_positions = np.array([point.position for point in cluster_points])
-
-            min_pos = max_pos = np.array(weighted_positions)
-
-            # 计算每个点的边界
-            for point in cluster_points:
-                p1 = np.array(point.position) - np.array(point.scale)
-                p2 = np.array(point.position) + np.array(point.scale)
-                min_pos = np.minimum(min_pos, p1)
-                max_pos = np.maximum(max_pos, p2)
-
-            weighted_scale = (max_pos - min_pos) / 2
-
-
-            weighted_color = np.clip(weighted_color, 0, 255)  # 限制范围
-            weighted_color = np.round(weighted_color).astype(int)  # 取整并转换为整数
-
-            weighted_rotation = np.clip(weighted_rotation, 0, 255)  # 限制范围
-            weighted_rotation = np.round(weighted_rotation).astype(int)  # 取整并转换为整数
-
-            # 处理球谐系数 - 如果原始点有球谐系数，计算加权平均
-            weighted_sh_coeffs = None
-            if cluster_points and hasattr(cluster_points[0], 'sh_coeffs') and cluster_points[0].sh_coeffs:
                 try:
-                    # 收集所有点的球谐系数
-                    sh_coeffs_list = []
+                    # 查询当前点的邻域
+                    indices = kdtree.query_ball_point(positions[i], distance_threshold)
+
+                    if not indices:  # 如果没有找到邻域点
+                        continue
+
+                    # 标记这些点为已访问
+                    visited[indices] = True
+
+                    # 提取聚类中的点
+                    cluster_points = [parent_points[j] for j in indices]
+                    cluster_count += 1
+
+                    # 计算权重，基于透明度，但确保至少有最小权重
+                    raw_weights = np.array([point.color[3] / 255.0 for point in cluster_points])
+
+                    # 如果所有权重都为0或接近0，使用均等权重
+                    if np.sum(raw_weights) < 1e-6:
+                        weights = np.ones(len(cluster_points)) / len(cluster_points)
+                    else:
+                        # 确保权重至少有一个最小值，避免数值问题
+                        weights = np.maximum(raw_weights, 1e-6)
+                        weights = weights / np.sum(weights)  # 归一化
+
+                    # 验证权重
+                    if not np.isfinite(weights).all() or np.sum(weights) < 1e-6:
+                        weights = np.ones(len(cluster_points)) / len(cluster_points)
+
+                    try:
+                        # 计算加权平均位置
+                        weighted_positions = np.average([point.position for point in cluster_points], axis=0, weights=weights)
+                        # 计算加权平均颜色
+                        weighted_color = np.average([point.color for point in cluster_points], axis=0, weights=weights)
+                        # 计算加权平均缩放
+                        # weighted_scale = np.average([point.scale for point in cluster_points], axis=0, weights=weights)
+                        # 计算加权平均旋转
+                        weighted_rotation = np.average([point.rotation for point in cluster_points], axis=0, weights=weights)
+                    except Exception as e:
+                        # 如果加权平均仍然失败，使用简单平均作为备选方案
+                        print(f"瓦片 {parent_tile_id}: 加权平均计算失败，使用简单平均: {e}")
+                        weighted_positions = np.mean([point.position for point in cluster_points], axis=0)
+                        weighted_color = np.mean([point.color for point in cluster_points], axis=0)
+                        weighted_rotation = np.mean([point.rotation for point in cluster_points], axis=0)
+
+                    # 计算点的分布范围
+                    cluster_positions = np.array([point.position for point in cluster_points])
+
+                    min_pos = max_pos = np.array(weighted_positions)
+
+                    # 计算每个点的边界
                     for point in cluster_points:
-                        if hasattr(point, 'sh_coeffs') and point.sh_coeffs:
-                            sh_coeffs_list.append(point.sh_coeffs)
-                        else:
-                            # 如果某个点没有球谐系数，用零填充
-                            sh_coeffs_list.append([0.0] * 48)
+                        p1 = np.array(point.position) - np.array(point.scale)
+                        p2 = np.array(point.position) + np.array(point.scale)
+                        min_pos = np.minimum(min_pos, p1)
+                        max_pos = np.maximum(max_pos, p2)
 
-                    if sh_coeffs_list:
-                        # 计算加权平均球谐系数
-                        weighted_sh_coeffs = np.average(sh_coeffs_list, axis=0, weights=weights).tolist()
-                except Exception as e:
+                    weighted_scale = (max_pos - min_pos) / 2
+
+                    weighted_color = np.clip(weighted_color, 0, 255)  # 限制范围
+                    weighted_color = np.round(weighted_color).astype(int)  # 取整并转换为整数
+
+                    weighted_rotation = np.clip(weighted_rotation, 0, 255)  # 限制范围
+                    weighted_rotation = np.round(weighted_rotation).astype(int)  # 取整并转换为整数
+
+                    # 处理球谐系数 - 如果原始点有球谐系数，计算加权平均
                     weighted_sh_coeffs = None
+                    if cluster_points and hasattr(cluster_points[0], 'sh_coeffs') and cluster_points[0].sh_coeffs:
+                        try:
+                            # 收集所有点的球谐系数
+                            sh_coeffs_list = []
+                            for point in cluster_points:
+                                if hasattr(point, 'sh_coeffs') and point.sh_coeffs:
+                                    sh_coeffs_list.append(point.sh_coeffs)
+                                else:
+                                    # 如果某个点没有球谐系数，用零填充
+                                    sh_coeffs_list.append([0.0] * 48)
 
-            lod_points.append(Point(weighted_positions, weighted_color, weighted_scale, weighted_rotation, weighted_sh_coeffs))
+                            if sh_coeffs_list:
+                                # 计算加权平均球谐系数
+                                weighted_sh_coeffs = np.average(sh_coeffs_list, axis=0, weights=weights).tolist()
+                        except Exception as e:
+                            weighted_sh_coeffs = None
 
-        # 确保循环结束时发送完整的进度更新
-        if last_progress_update < 1.0:
-            progress_queue.put(1.0 - last_progress_update)
+                    lod_points.append(Point(weighted_positions, weighted_color, weighted_scale, weighted_rotation, weighted_sh_coeffs))
 
-        write_gaussian_file(parent_tile_file_path, lod_points)
+                except Exception as e:
+                    print(f"瓦片 {parent_tile_id}: 处理点 {i} 时出错: {e}")
+                    continue
+
+            # 确保循环结束时发送完整的进度更新
+            if last_progress_update < 1.0:
+                progress_queue.put(1.0 - last_progress_update)
+
+            print(f"瓦片 {parent_tile_id}: 聚类完成，生成 {cluster_count} 个聚类，输出 {len(lod_points)} 个LOD点")
+
+        except Exception as e:
+            print(f"瓦片 {parent_tile_id}: 聚类过程出错: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # 确保输出目录存在
+        os.makedirs(os.path.dirname(parent_tile_file_path), exist_ok=True)
+
+        # 写入文件
+        if lod_points:
+            write_gaussian_file(parent_tile_file_path, lod_points)
+            print(f"瓦片 {parent_tile_id}: 成功写入 {len(lod_points)} 个点到 {os.path.basename(parent_tile_file_path)}")
+        else:
+            print(f"瓦片 {parent_tile_id}: 没有生成LOD点，跳过写入")
 
         # 通知主进程任务完成
         progress_queue.put(None)  # 使用 None 作为任务完成的信号
     except Exception as e:
-        print(f"Error in build_lod_tiles_for_parent: {e}")
+        print(f"Error in build_lod_tiles_for_parent (瓦片 {parent_tile_id}): {e}")
+        import traceback
+        print("完整错误堆栈:")
+        traceback.print_exc()
         progress_queue.put(None)  # 确保主进程不会阻塞
 
 

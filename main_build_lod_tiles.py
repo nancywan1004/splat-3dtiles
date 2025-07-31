@@ -25,14 +25,32 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
     处理单个父级瓦片的LOD构建
     """
     try:
-        # 检测输入文件格式
-        file_format = "splat"  # 默认格式
-        for child_tile_id in children_tile_ids:
-            # 检查是否存在PLY格式的文件
-            ply_path = child_tile_id.getFilePath(input_dir, ".ply")
-            if os.path.exists(ply_path):
+        # 检测输入文件格式 - 改进的检测逻辑
+        file_format = "ply"  # 默认为ply格式，因为现在大部分文件都是ply
+
+        # 首先检查输入目录中实际存在的文件
+        if os.path.exists(input_dir):
+            existing_files = os.listdir(input_dir)
+            # 检查是否有任何ply文件
+            has_ply = any(f.endswith('.ply') for f in existing_files)
+            has_splat = any(f.endswith('.splat') for f in existing_files)
+
+            if has_ply:
                 file_format = "ply"
-                break
+            elif has_splat:
+                file_format = "splat"
+            else:
+                # 如果目录为空或没有相关文件，尝试检查具体的子瓦片文件
+                for child_tile_id in children_tile_ids:
+                    # 检查是否存在PLY格式的文件
+                    ply_path = child_tile_id.getFilePath(input_dir, ".ply")
+                    splat_path = child_tile_id.getFilePath(input_dir, ".splat")
+                    if os.path.exists(ply_path):
+                        file_format = "ply"
+                        break
+                    elif os.path.exists(splat_path):
+                        file_format = "splat"
+                        break
 
         ext = ".ply" if file_format == "ply" else ".splat"
         parent_tile_file_path = parent_tile_id.getFilePath(output_dir, ext)

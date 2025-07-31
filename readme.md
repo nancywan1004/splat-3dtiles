@@ -16,6 +16,11 @@ splat-3dtiles 是一款将高斯点云转换为 Cesium 3D Tiles 格式的工具�
 暫不支持平移、旋轉、缩放等操作，如果需要，可以先使用其他工具进行转换。
 可使用 SuperSplat 等工具轉換 https://superspl.at/editor
 
+### 输入方式
+- ✅ **单文件输入**: 支持直接处理单个 `.splat` 或 `.ply` 文件
+- ✅ **文件夹输入**: 支持处理包含多个文件的文件夹
+- ✅ **自动检测**: 程序会自动检测输入是文件还是文件夹并相应处理
+
 ### 支持的文件格式
 - ✅ `.splat` 文件 (二进制格式)
 - ✅ `.ply` 文件 (3D Gaussian Splatting标准格式)
@@ -48,11 +53,22 @@ pip install plyfile
 ## 使用
 
 ### 基本用法
+
+#### 单文件输入 (新功能)
 ```bash
-# 处理SPLAT文件
+# 处理单个SPLAT文件
+python main.py --input ./data/scene.splat --output ./output --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
+
+# 处理单个PLY文件
+python main.py --input ./data/scene.ply --output ./output --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
+```
+
+#### 文件夹输入 (原有功能)
+```bash
+# 处理SPLAT文件夹
 python main.py --input ./data/NNU_1/splats --output ./data/NNU_1/3dtiles --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
 
-# 处理PLY文件
+# 处理PLY文件夹
 python main.py --input ./data/ply_models --output ./data/ply_3dtiles --enu_origin 118.91083364082562 32.116922266350315 --tile_zoom 20
 
 # 处理混合格式文件夹

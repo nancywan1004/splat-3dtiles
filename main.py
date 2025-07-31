@@ -171,7 +171,7 @@ if __name__ == "__main__":
 
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="将 3D Gaussian Splatting 点云转换为 Cesium 3D Tiles 格式")
-    parser.add_argument("--input", "-i", required=True, help="输入的高斯点云文件夹.")
+    parser.add_argument("--input", "-i", required=True, help="输入的高斯点云文件或文件夹。支持单个 .splat/.ply 文件或包含多个文件的文件夹。")
     parser.add_argument("--output", "-o", required=True, help="输出保存 3dtiles 文件夹.")
     parser.add_argument("--enu_origin", nargs=2, type=float, metavar=('lon', 'lat'), help="指定 ENU 坐标系的原点经纬度 (lon, lat)。默认为 (0.0, 0.0)。")
     parser.add_argument("--tile_zoom", type=int, default=20, help="分块的等级，默认为 20。")
@@ -197,7 +197,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    input_dir = args.input
+    input_path = args.input
     output_dir = args.output
     enu_origin = (args.enu_origin[0], args.enu_origin[1]) if args.enu_origin else (0.0, 0.0)
     tile_zoom = args.tile_zoom
@@ -235,15 +235,15 @@ if __name__ == "__main__":
                 print(f"📁 在split目录中找到 {len(tile_files)} 个瓦片文件，直接使用")
             else:
                 print(f"⚠️  split目录存在但为空，需要执行split操作")
-                print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
-                main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
+                print(f"----main_split_to_tiles start:[{tile_zoom}][{input_path}][{split_output_dir}]")
+                main_split_to_tiles(input_path, split_output_dir, enu_origin, tile_zoom)
         else:
             print(f"⚠️  split目录不存在，需要执行split操作")
-            print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
-            main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
+            print(f"----main_split_to_tiles start:[{tile_zoom}][{input_path}][{split_output_dir}]")
+            main_split_to_tiles(input_path, split_output_dir, enu_origin, tile_zoom)
     else:
-        print(f"----main_split_to_tiles start:[{tile_zoom}][{input_dir}][{split_output_dir}]")
-        main_split_to_tiles(input_dir, split_output_dir, enu_origin, tile_zoom)
+        print(f"----main_split_to_tiles start:[{tile_zoom}][{input_path}][{split_output_dir}]")
+        main_split_to_tiles(input_path, split_output_dir, enu_origin, tile_zoom)
 
     # 检查是否跳过clean步骤
     if args.skip_clean:

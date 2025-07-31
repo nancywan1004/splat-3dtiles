@@ -229,7 +229,7 @@ def split_to_tiles_file(input_file: str, output_dir: str,
 
 
 # 将高斯溅射的数据切块
-def main_split_to_tiles(input_dir: str, output_dir: str,
+def main_split_to_tiles(input_path: str, output_dir: str,
                         enu_origin: Tuple[float, float] = (0.0, 0.0),
                         tile_zoom: int = 20):
 
@@ -248,9 +248,28 @@ def main_split_to_tiles(input_dir: str, output_dir: str,
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # 读取所有高斯文件 (支持 .splat 和 .ply 格式)
-    gaussian_files = [f for f in os.listdir(input_dir) if f.endswith('.splat') or f.endswith('.ply')]
+    # 检查输入路径是文件还是目录
+    if os.path.isfile(input_path):
+        # 单一文件输入
+        if input_path.lower().endswith(('.splat', '.ply')):
+            gaussian_files = [os.path.basename(input_path)]
+            input_dir = os.path.dirname(input_path)
+            print(f"处理单一文件: {input_path}")
+        else:
+            raise ValueError(f"不支持的文件格式: {input_path}。仅支持 .splat 和 .ply 文件。")
+    elif os.path.isdir(input_path):
+        # 目录输入
+        input_dir = input_path
+        gaussian_files = [f for f in os.listdir(input_dir) if f.endswith('.splat') or f.endswith('.ply')]
+        print(f"处理目录: {input_path}")
+    else:
+        raise ValueError(f"输入路径不存在或不是有效的文件/目录: {input_path}")
+
     file_num = len(gaussian_files)
+    if file_num == 0:
+        print("未找到任何 .splat 或 .ply 文件。")
+        return
+
     splat_count = len([f for f in gaussian_files if f.endswith('.splat')])
     ply_count = len([f for f in gaussian_files if f.endswith('.ply')])
     print(f"Found {file_num} gaussian files: {splat_count} .splat files, {ply_count} .ply files.")

@@ -292,7 +292,12 @@ def main_build_lod_tiles(input_dir: str, output_dir: str,
 
     parent_tiles = defaultdict(list)
     for tile_id in gaussian_tiles:
-        parent_tile_id = tile_id.getParent()
+        # 计算跳级后的父瓦片ID：直接使用目标层级，而不是getParent()
+        # 这样可以确保生成的瓦片文件名与目标层级一致
+        level_diff = tile_id.z - tile_zoom  # 计算层级差
+        parent_x = tile_id.x >> level_diff  # 右移level_diff位，相当于除以2^level_diff
+        parent_y = tile_id.y >> level_diff
+        parent_tile_id = TileId(parent_x, parent_y, tile_zoom)
         parent_tiles[parent_tile_id].append(tile_id)
 
     # 初始化进度队列

@@ -180,6 +180,8 @@ if __name__ == "__main__":
     parser.add_argument("--lod_factor", type=float, default=1.3, help="LOD因子，控制聚类激进程度。值越小越精细(1.2-2.0)，默认1.3。")
     parser.add_argument("--use_fine_lod", action="store_true", help="使用精细LOD算法，适合大规模点云场景。")
     parser.add_argument("--target_reduction_ratio", type=float, default=0.65, help="精细LOD的目标减少比例(0.5-0.8)，默认0.65。")
+    parser.add_argument("--lod_levels", type=int, default=4, help="LOD层数，默认为4层。")
+    parser.add_argument("--lod_skip", type=int, default=0, help="LOD跳级参数，0表示每级都生成，1表示跳1级，默认为0。")
 
 
     parser.add_argument("--min_alpha", type=float, default=1.0, help="最小透明度阈值，小于该阈值的高斯点会被过滤，默认为 1.0。")
@@ -206,6 +208,8 @@ if __name__ == "__main__":
     lod_factor = args.lod_factor
     use_fine_lod = args.use_fine_lod
     target_reduction_ratio = args.target_reduction_ratio
+    lod_levels = args.lod_levels
+    lod_skip = args.lod_skip
 
     min_alpha = args.min_alpha
     max_scale = args.max_scale
@@ -302,20 +306,32 @@ if __name__ == "__main__":
             main_clean_tiles(split_output_dir, clean_output_dir, min_alpha, max_scale, flyers_num, flyers_dis)
 
 
-    lod_zoom = tile_zoom - 1
+    # 计算LOD层级序列，从初始层级开始应用跳级
+    lod_levels_to_generate = []
+    current_zoom = tile_zoom - (1 + lod_skip)  # 第一个LOD层级就应用跳级
+
+    for i in range(lod_levels):
+        if current_zoom > 0:
+            lod_levels_to_generate.append(current_zoom)
+            current_zoom -= (1 + lod_skip)  # 后续层级继续应用跳级
+        else:
+            break
+
+    print(f"开始生成LOD，总共将生成 {len(lod_levels_to_generate)} 层，层级序列: {lod_levels_to_generate}，跳级参数: {lod_skip}")
+
     lod_input_dir = clean_output_dir
-    while lod_zoom > tile_zoom - 6:
+
+    for i, lod_zoom in enumerate(lod_levels_to_generate):
         lod_output_dir = os.path.join(build_output_dir, f"{lod_zoom}")
 
         if use_fine_lod:
-            print(f"----main_build_fine_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}]")
+            print(f"----main_build_fine_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}] (第{i + 1}层)")
             main_build_fine_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom,
                                     tile_resolution, target_reduction_ratio)
         else:
-            print(f"----main_build_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}]")
+            print(f"----main_build_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}] (第{i + 1}层)")
             main_build_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom, tile_resolution, lod_factor)
 
         lod_input_dir = lod_output_dir
-        lod_zoom -= 1
 
     main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)

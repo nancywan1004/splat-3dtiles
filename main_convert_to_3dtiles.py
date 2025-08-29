@@ -38,7 +38,7 @@ class TileNode:
         self.parent = None
 
 
-def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], Dict[TileId, TileNode]):
+def build_tile_tree(input_dir: str, tile_error: float = 1, max_tile_zoom: int = 20) -> (List[TileNode], Dict[TileId, TileNode]):
     # 正确初始化 defaultdict
     tile_node_dict: Dict[TileId, TileNode] = defaultdict(TileNode)
 
@@ -48,6 +48,34 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
 
     input_sub_dirs = [dir for dir in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, dir))]
     print(f"找到 {len(input_sub_dirs)} 个子目录: {input_sub_dirs}")
+
+    # 收集所有实际存在的层级，用于计算几何误差的层级映射
+    actual_zoom_levels = []
+    for sub_dir in input_sub_dirs:
+        try:
+            zoom_level = int(sub_dir)
+            actual_zoom_levels.append(zoom_level)
+        except ValueError:
+            continue
+
+    actual_zoom_levels.sort(reverse=True)  # 从高到低排序
+    print(f"实际存在的层级: {actual_zoom_levels}")
+
+    # 创建层级到几何误差的直接映射
+    # 几何误差应该按照实际的层级差来计算，而不是连续的层级
+    zoom_to_geometric_error = {}
+
+    if actual_zoom_levels:
+        # 最高层级（通常是20级）的几何误差为基准值
+        highest_zoom = actual_zoom_levels[0]
+        base_error = tile_error * (2** (max_tile_zoom - highest_zoom))
+
+        for zoom in actual_zoom_levels:
+            # 几何误差按照与最高层级的实际层级差来计算
+            level_diff = highest_zoom - zoom  # 层级差
+            zoom_to_geometric_error[zoom] = base_error * (2** level_diff)
+
+    print(f"层级到几何误差的映射: {zoom_to_geometric_error}")
 
     for sub_dir in input_sub_dirs:
         input_sub_dir = os.path.join(input_dir, sub_dir)
@@ -64,7 +92,16 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
         for splat_file in splat_files:
             tile_id = TileId.fromString(splat_file)
             tile_node = TileNode(tile_id)
-            tile_node.geometric_error = tile_error * (2** (20 - tile_id.z))
+
+            # 使用实际层级映射计算几何误差
+            if tile_id.z in zoom_to_geometric_error:
+                tile_node.geometric_error = zoom_to_geometric_error[tile_id.z]
+                print(f"瓦片 {tile_id.z} 级，几何误差: {tile_node.geometric_error}")
+            else:
+                # 回退到原始计算方式
+                tile_node.geometric_error = tile_error * (2** (max_tile_zoom - tile_id.z))
+                print(f"瓦片 {tile_id.z} 级使用原始几何误差计算: {tile_node.geometric_error}")
+
             tile_node.splat_file = os.path.join(sub_dir, splat_file)
             tile_node.splat_file = tile_node.splat_file.replace("\\", "/")
 
@@ -81,12 +118,30 @@ def build_tile_tree(input_dir: str, tile_error: float = 1) -> (List[TileNode], D
             tile_node.gltf_file = tile_node.gltf_file.replace("\\", "/")
             tile_node_dict[tile_id] = tile_node
 
-    for tile_id, tile_node in tile_node_dict.items():
-        parent_tile_id = tile_id.getParent()
-        parent_tile_node = tile_node_dict.get(parent_tile_id)
-        if parent_tile_node:
-            parent_tile_node.children.append(tile_node)
-            tile_node.parent = parent_tile_node
+    # 建立跳级LOD的父子关系
+    # 按层级从高到低排序，确保父节点先处理
+    sorted_tile_items = sorted(tile_node_dict.items(), key=lambda x: x[0].z, reverse=True)
+
+    for tile_id, tile_node in sorted_tile_items:
+        # 寻找实际存在的父节点（可能跳级）
+        current_z = tile_id.z - 1
+        parent_found = False
+
+        while current_z > 0 and not parent_found:
+            # 计算当前层级的父瓦片坐标
+            level_diff = tile_id.z - current_z
+            parent_x = tile_id.x >> level_diff
+            parent_y = tile_id.y >> level_diff
+            potential_parent_id = TileId(parent_x, parent_y, current_z)
+
+            parent_tile_node = tile_node_dict.get(potential_parent_id)
+            if parent_tile_node:
+                parent_tile_node.children.append(tile_node)
+                tile_node.parent = parent_tile_node
+                parent_found = True
+                print(f"建立父子关系: {tile_id.z}级瓦片 -> {current_z}级父瓦片")
+            else:
+                current_z -= 1  # 继续向上寻找
 
     root_tile_nodes = []
     for tile_id, tile_node in tile_node_dict.items():
@@ -343,7 +398,7 @@ def main_convert_to_3dtiles(input_dir: str, output_dir: str,
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    root_tile_nodes, tile_node_dict = build_tile_tree(input_dir, tile_error)
+    root_tile_nodes, tile_node_dict = build_tile_tree(input_dir, tile_error, tile_zoom)
 
     convert_to_gltf_tiles(tile_node_dict, input_dir, output_dir)
 

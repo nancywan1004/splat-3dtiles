@@ -182,6 +182,8 @@ if __name__ == "__main__":
     parser.add_argument("--target_reduction_ratio", type=float, default=0.65, help="精细LOD的目标减少比例(0.5-0.8)，默认0.65。")
     parser.add_argument("--lod_levels", type=int, default=4, help="LOD层数，默认为4层。")
     parser.add_argument("--lod_skip", type=int, default=0, help="LOD跳级参数，0表示每级都生成，1表示跳1级，默认为0。")
+    parser.add_argument("--use_gpu", action="store_true", help="使用GPU加速LOD构建（需要安装faiss-gpu）。")
+    parser.add_argument("--gpu_id", type=int, default=0, help="指定使用的GPU设备ID，默认0。")
 
 
     parser.add_argument("--min_alpha", type=float, default=1.0, help="最小透明度阈值，小于该阈值的高斯点会被过滤，默认为 1.0。")
@@ -210,6 +212,8 @@ if __name__ == "__main__":
     target_reduction_ratio = args.target_reduction_ratio
     lod_levels = args.lod_levels
     lod_skip = args.lod_skip
+    use_gpu = args.use_gpu
+    gpu_id = args.gpu_id
 
     min_alpha = args.min_alpha
     max_scale = args.max_scale
@@ -327,10 +331,10 @@ if __name__ == "__main__":
         if use_fine_lod:
             print(f"----main_build_fine_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}] (第{i + 1}层)")
             main_build_fine_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom,
-                                    tile_resolution, target_reduction_ratio)
+                                    tile_resolution, target_reduction_ratio, use_gpu, gpu_id)
         else:
             print(f"----main_build_lod_tiles start:[{lod_zoom}][{lod_input_dir}][{lod_output_dir}] (第{i + 1}层)")
-            main_build_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom, tile_resolution, lod_factor)
+            main_build_lod_tiles(lod_input_dir, lod_output_dir, enu_origin, lod_zoom, tile_resolution, lod_factor, use_gpu, gpu_id)
 
         lod_input_dir = lod_output_dir
 

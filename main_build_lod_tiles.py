@@ -13,14 +13,28 @@ from point import Point
 from tile import TileId
 
 import numpy as np
-from scipy.spatial import KDTree
+
+# 尝试导入GPU工具，如果不可用则使用scipy
+try:
+    from gpu_utils import GPUIndexWrapper, check_gpu_available, get_default_gpu_id
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+    GPUIndexWrapper = None
+
+try:
+    from scipy.spatial import KDTree
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    KDTree = None
 
 
 point_num_per_update = 1000
 
 
 
-def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[TileId], input_dir: str, output_dir: str, distance_threshold: float, progress_queue):
+def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[TileId], input_dir: str, output_dir: str, distance_threshold: float, progress_queue, use_gpu: bool = False, gpu_id: int = 0):
     """
     处理单个父级瓦片的LOD构建
     """
@@ -97,11 +111,25 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
                 point_num = len(parent_points)
                 print(f"瓦片 {parent_tile_id}: 清理后剩余 {point_num:,} 个有效点")
 
-            # 构建 KDTree
-            print(f"瓦片 {parent_tile_id}: 构建KDTree...")
-            kdtree = KDTree(positions)
+            # 构建 KDTree 或 GPU索引
+            print(f"瓦片 {parent_tile_id}: 构建空间索引...")
+            if use_gpu and GPU_AVAILABLE and GPUIndexWrapper is not None:
+                try:
+                    kdtree = GPUIndexWrapper(positions, use_gpu=True, gpu_id=gpu_id)
+                except Exception as e:
+                    print(f"瓦片 {parent_tile_id}: GPU索引构建失败，回退到CPU: {e}")
+                    if SCIPY_AVAILABLE and KDTree is not None:
+                        kdtree = KDTree(positions)
+                    else:
+                        raise RuntimeError("既没有GPU也没有scipy，无法构建索引")
+            else:
+                if SCIPY_AVAILABLE and KDTree is not None:
+                    kdtree = KDTree(positions)
+                else:
+                    raise RuntimeError("scipy不可用，无法构建索引")
+            
             visited = np.zeros(point_num, dtype=bool)
-            print(f"瓦片 {parent_tile_id}: KDTree构建完成")
+            print(f"瓦片 {parent_tile_id}: 空间索引构建完成")
 
         except Exception as e:
             print(f"瓦片 {parent_tile_id}: 构建KDTree时出错: {e}")
@@ -225,6 +253,13 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
             print(f"瓦片 {parent_tile_id}: 聚类过程出错: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # 清理GPU资源
+            if 'kdtree' in locals() and isinstance(kdtree, GPUIndexWrapper):
+                try:
+                    kdtree.cleanup()
+                except Exception:
+                    pass
 
         # 确保输出目录存在
         os.makedirs(os.path.dirname(parent_tile_file_path), exist_ok=True)
@@ -251,7 +286,7 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
 def main_build_lod_tiles(input_dir: str, output_dir: str,
                          enu_origin: Tuple[float, float] = (0.0, 0.0),
                          tile_zoom: int = 20, tile_resolution: float = 0.05,
-                         lod_factor: float = 1.5):
+                         lod_factor: float = 1.5, use_gpu: bool = False, gpu_id: int = 0):
     """
     构建LOD瓦片，使用多进程并行处理
 
@@ -306,6 +341,19 @@ def main_build_lod_tiles(input_dir: str, output_dir: str,
     manager = Manager()
     progress_queue = manager.Queue()
 
+    # 检查GPU可用性
+    if use_gpu:
+        if GPU_AVAILABLE:
+            gpu_available, gpu_count = check_gpu_available()
+            if not gpu_available:
+                print("⚠️  请求使用GPU，但GPU不可用，回退到CPU")
+                use_gpu = False
+            else:
+                print(f"✓ 检测到 {gpu_count} 个GPU，使用GPU ID: {gpu_id}")
+        else:
+            print("⚠️  请求使用GPU，但GPU工具不可用，回退到CPU")
+            use_gpu = False
+    
     # 初始化进度条 - 使用浮点数以支持增量更新
     total_tasks = len(parent_tiles)
     pbar = tqdm(total=float(total_tasks), desc="Building lod", position=0)
@@ -315,7 +363,7 @@ def main_build_lod_tiles(input_dir: str, output_dir: str,
     with Pool(processes=cpu_count()) as pool:
         tasks = []
         for parent_tile_id, children_tile_ids in parent_tiles.items():
-            tasks.append(pool.apply_async(build_lod_tiles_for_parent, (parent_tile_id, children_tile_ids, input_dir, output_dir, distance_threshold, progress_queue)))
+            tasks.append(pool.apply_async(build_lod_tiles_for_parent, (parent_tile_id, children_tile_ids, input_dir, output_dir, distance_threshold, progress_queue, use_gpu, gpu_id)))
 
         # 等待所有任务完成
         completed_tasks = 0

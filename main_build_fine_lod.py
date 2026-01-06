@@ -12,7 +12,21 @@ import struct
 from typing import Dict, Tuple, List
 from collections import defaultdict
 import numpy as np
-from scipy.spatial import KDTree
+
+# 尝试导入GPU工具
+try:
+    from gpu_utils import GPUIndexWrapper, check_gpu_available, get_default_gpu_id
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+    GPUIndexWrapper = None
+
+try:
+    from scipy.spatial import KDTree
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    KDTree = None
 
 from tqdm import tqdm
 from common import read_gaussian_file, write_gaussian_file
@@ -23,7 +37,7 @@ point_num_per_update = 1000
 
 def build_fine_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[TileId], 
                                    input_dir: str, output_dir: str, distance_threshold: float, 
-                                   target_reduction_ratio: float, progress_queue):
+                                   target_reduction_ratio: float, progress_queue, use_gpu: bool = False, gpu_id: int = 0):
     """
     处理单个父级瓦片的精细LOD构建
     
@@ -62,7 +76,7 @@ def build_fine_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: L
             lod_points = parent_points
         else:
             # 使用分层聚类策略
-            lod_points = hierarchical_clustering_lod(parent_points, target_point_num, distance_threshold, progress_queue)
+            lod_points = hierarchical_clustering_lod(parent_points, target_point_num, distance_threshold, progress_queue, use_gpu, gpu_id)
 
         # 确保输出目录存在
         os.makedirs(os.path.dirname(parent_tile_file_path), exist_ok=True)
@@ -85,7 +99,7 @@ def build_fine_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: L
         return 0
 
 def hierarchical_clustering_lod(points: List[Point], target_point_num: int, 
-                               distance_threshold: float, progress_queue) -> List[Point]:
+                               distance_threshold: float, progress_queue, use_gpu: bool = False, gpu_id: int = 0) -> List[Point]:
     """
     分层聚类LOD算法，更精细地控制点数减少
     使用迭代方法动态调整距离阈值以达到目标点数
@@ -96,8 +110,21 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
     # 提取所有点的位置
     positions = np.array([point.position for point in points])
     
-    # 构建 KDTree
-    kdtree = KDTree(positions)
+    # 构建 KDTree 或 GPU索引
+    if use_gpu and GPU_AVAILABLE and GPUIndexWrapper is not None:
+        try:
+            kdtree = GPUIndexWrapper(positions, use_gpu=True, gpu_id=gpu_id)
+        except Exception as e:
+            print(f"GPU索引构建失败，回退到CPU: {e}")
+            if SCIPY_AVAILABLE and KDTree is not None:
+                kdtree = KDTree(positions)
+            else:
+                raise RuntimeError("既没有GPU也没有scipy，无法构建索引")
+    else:
+        if SCIPY_AVAILABLE and KDTree is not None:
+            kdtree = KDTree(positions)
+        else:
+            raise RuntimeError("scipy不可用，无法构建索引")
     
     # 使用二分搜索找到合适的距离阈值
     min_threshold = distance_threshold * 0.1  # 最小阈值为初始值的10%
@@ -172,6 +199,13 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
             adaptive_threshold = min_threshold * 1.1
         if adaptive_threshold > max_threshold * 0.9:
             adaptive_threshold = max_threshold * 0.9
+    
+    # 清理GPU资源
+    if 'kdtree' in locals() and isinstance(kdtree, GPUIndexWrapper):
+        try:
+            kdtree.cleanup()
+        except Exception:
+            pass
     
     # 使用最佳结果
     lod_points = best_result if best_result else lod_points
@@ -310,7 +344,7 @@ def importance_sampling(points: List[Point], target_count: int) -> List[Point]:
 def main_build_fine_lod_tiles(input_dir: str, output_dir: str,
                              enu_origin: Tuple[float, float] = (0.0, 0.0),
                              tile_zoom: int = 20, tile_resolution: float = 0.05,
-                             target_reduction_ratio: float = 0.6):
+                             target_reduction_ratio: float = 0.6, use_gpu: bool = False, gpu_id: int = 0):
     """
     构建精细LOD瓦片
     

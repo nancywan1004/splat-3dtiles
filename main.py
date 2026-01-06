@@ -334,4 +334,4 @@ if __name__ == "__main__":
 
         lod_input_dir = lod_output_dir
 
-    main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)
+    # main_convert_to_3dtiles(build_output_dir, result_output_dir, enu_origin, tile_zoom, tile_error)

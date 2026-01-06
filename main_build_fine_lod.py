@@ -88,6 +88,7 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
                                distance_threshold: float, progress_queue) -> List[Point]:
     """
     分层聚类LOD算法，更精细地控制点数减少
+    使用迭代方法动态调整距离阈值以达到目标点数
     """
     if len(points) <= target_point_num:
         return points
@@ -97,61 +98,132 @@ def hierarchical_clustering_lod(points: List[Point], target_point_num: int,
     
     # 构建 KDTree
     kdtree = KDTree(positions)
-    visited = np.zeros(len(points), dtype=bool)
-    lod_points = []
     
-    # 计算自适应距离阈值
+    # 使用二分搜索找到合适的距离阈值
+    min_threshold = distance_threshold * 0.1  # 最小阈值为初始值的10%
+    max_threshold = distance_threshold * 10.0  # 最大阈值为初始值的10倍
     adaptive_threshold = distance_threshold
     
-    # 如果预期聚类后点数仍然太多，增加距离阈值
-    estimated_clusters = estimate_cluster_count(positions, adaptive_threshold)
-    if estimated_clusters > target_point_num * 1.5:
-        adaptive_threshold *= 1.5
-    elif estimated_clusters < target_point_num * 0.7:
-        adaptive_threshold *= 0.8
+    # 迭代调整阈值，最多尝试10次
+    max_iterations = 10
+    best_result = None
+    best_diff = float('inf')
     
-    last_progress_update = 0
-    for i in range(len(points)):
-        # 每隔1000个点或处理完成时通知主进程
-        if i % point_num_per_update == 0 or i == len(points) - 1:
-            # 计算当前进度百分比
-            current_progress = i / len(points)
-            # 发送增量进度更新
-            progress_increment = current_progress - last_progress_update
-            if progress_increment > 0:
-                progress_queue.put(progress_increment)
-                last_progress_update = current_progress
+    for iteration in range(max_iterations):
+        visited = np.zeros(len(points), dtype=bool)
+        lod_points = []
+        
+        # 计算每个聚类应该包含的平均点数
+        avg_points_per_cluster = len(points) / target_point_num
+        
+        # 使用当前阈值进行聚类
+        for i in range(len(points)):
+            if visited[i]:
+                continue
 
-        if visited[i]:
-            continue
+            # 查询当前点的邻域
+            indices = kdtree.query_ball_point(positions[i], adaptive_threshold)
 
-        # 查询当前点的邻域
-        indices = kdtree.query_ball_point(positions[i], adaptive_threshold)
+            if not indices:
+                continue
 
-        # 标记这些点为已访问
-        visited[indices] = True
+            # 如果邻域点数太多，进行子采样
+            if len(indices) > avg_points_per_cluster * 3:
+                # 随机采样，确保每个聚类不会包含过多点
+                import random
+                max_points = int(avg_points_per_cluster * 2)
+                if len(indices) > max_points:
+                    indices = random.sample(list(indices), max_points)
 
-        # 提取聚类中的点
-        cluster_points = [points[j] for j in indices]
+            # 标记这些点为已访问
+            visited[indices] = True
 
-        # 计算加权平均点
-        merged_point = compute_weighted_average_point(cluster_points)
-        lod_points.append(merged_point)
+            # 提取聚类中的点
+            cluster_points = [points[j] for j in indices]
 
-        # 如果已经达到目标点数，停止聚类
-        if len(lod_points) >= target_point_num:
-            # 确保发送最终的进度更新
-            if last_progress_update < 1.0:
-                progress_queue.put(1.0 - last_progress_update)
+            # 计算加权平均点
+            merged_point = compute_weighted_average_point(cluster_points)
+            lod_points.append(merged_point)
+
+        result_count = len(lod_points)
+        diff = abs(result_count - target_point_num)
+        
+        # 记录最接近目标的结果
+        if diff < best_diff:
+            best_diff = diff
+            best_result = lod_points.copy()
+        
+        # 如果结果在目标范围内（±10%），使用这个结果
+        if target_point_num * 0.9 <= result_count <= target_point_num * 1.1:
             break
-
-    # 确保循环结束时发送完整的进度更新
-    if last_progress_update < 1.0:
-        progress_queue.put(1.0 - last_progress_update)
+        
+        # 根据结果调整阈值
+        if result_count < target_point_num * 0.9:
+            # 点数太少，减小阈值（更精细的聚类）
+            max_threshold = adaptive_threshold
+            adaptive_threshold = (min_threshold + adaptive_threshold) / 2.0
+        else:
+            # 点数太多，增大阈值（更激进的聚类）
+            min_threshold = adaptive_threshold
+            adaptive_threshold = (adaptive_threshold + max_threshold) / 2.0
+        
+        # 防止阈值过小或过大
+        if adaptive_threshold < min_threshold * 1.1:
+            adaptive_threshold = min_threshold * 1.1
+        if adaptive_threshold > max_threshold * 0.9:
+            adaptive_threshold = max_threshold * 0.9
+    
+    # 使用最佳结果
+    lod_points = best_result if best_result else lod_points
     
     # 如果点数仍然太多，进行二次采样
     if len(lod_points) > target_point_num:
         lod_points = importance_sampling(lod_points, target_point_num)
+    # 如果点数仍然太少，对原始点云进行均匀采样后再聚类
+    elif len(lod_points) < target_point_num * 0.8:
+        # 这种情况通常发生在点云密度很高时
+        # 先对原始点云进行均匀采样，确保有足够的点进行聚类
+        sample_ratio = min(1.0, target_point_num * 1.5 / len(points))
+        if sample_ratio < 1.0:
+            import random
+            sampled_indices = random.sample(range(len(points)), int(len(points) * sample_ratio))
+            sampled_points = [points[i] for i in sampled_indices]
+            sampled_positions = np.array([point.position for point in sampled_points])
+            sampled_kdtree = KDTree(sampled_positions)
+            
+            # 使用更小的阈值重新聚类
+            final_threshold = adaptive_threshold * 0.5
+            visited = np.zeros(len(sampled_points), dtype=bool)
+            lod_points = []
+            
+            for i in range(len(sampled_points)):
+                if visited[i]:
+                    continue
+                
+                indices = sampled_kdtree.query_ball_point(sampled_positions[i], final_threshold)
+                if not indices:
+                    continue
+                
+                visited[indices] = True
+                cluster_points = [sampled_points[j] for j in indices]
+                merged_point = compute_weighted_average_point(cluster_points)
+                lod_points.append(merged_point)
+                
+                # 如果达到目标点数，停止
+                if len(lod_points) >= target_point_num:
+                    break
+            
+            # 如果仍然不够，使用重要性采样补充
+            if len(lod_points) < target_point_num * 0.9:
+                # 从未聚类的点中选择重要的点补充
+                unvisited_points = [sampled_points[i] for i in range(len(sampled_points)) if not visited[i]]
+                if unvisited_points:
+                    needed = target_point_num - len(lod_points)
+                    additional_points = importance_sampling(unvisited_points, min(needed, len(unvisited_points)))
+                    lod_points.extend(additional_points)
+    
+    # 发送完成进度
+    progress_queue.put(1.0)
     
     return lod_points
 

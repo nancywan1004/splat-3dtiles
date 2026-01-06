@@ -238,12 +238,14 @@ def build_lod_tiles_for_parent(parent_tile_id: TileId, children_tile_ids: List[T
 
         # 通知主进程任务完成
         progress_queue.put(None)  # 使用 None 作为任务完成的信号
+        return len(lod_points)  # 返回生成的LOD点数，用于统计
     except Exception as e:
         print(f"Error in build_lod_tiles_for_parent (瓦片 {parent_tile_id}): {e}")
         import traceback
         print("完整错误堆栈:")
         traceback.print_exc()
         progress_queue.put(None)  # 确保主进程不会阻塞
+        return 0  # 返回0表示失败
 
 
 def main_build_lod_tiles(input_dir: str, output_dir: str,
@@ -340,4 +342,5 @@ def main_build_lod_tiles(input_dir: str, output_dir: str,
 
     # 关闭进度条
     pbar.close()
-    print(f"成功处理 {len([r for r in task_results.values() if r is not None])} / {total_tasks} 个瓦片")
+    successful_tasks = [r for r in task_results.values() if r is not None and r > 0]
+    print(f"成功处理 {len(successful_tasks)} / {total_tasks} 个瓦片")
